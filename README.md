@@ -2,7 +2,7 @@
 
 **A desktop tool for batch-extracting thermodynamic data from Gaussian `.log` files, with relative-energy calculation and reaction-profile plotting.**
 
-![Python](https://img.shields.io/badge/Python-3.9%20--%203.13-blue) ![GUI](https://img.shields.io/badge/GUI-Tkinter-orange) ![Status](https://img.shields.io/badge/Status-Active%20Development-green)
+![Python](https://img.shields.io/badge/Python-3.9%20--%203.14-blue) ![GUI](https://img.shields.io/badge/GUI-Tkinter-orange) ![Status](https://img.shields.io/badge/Status-Active%20Development-green)
 
 ---
 

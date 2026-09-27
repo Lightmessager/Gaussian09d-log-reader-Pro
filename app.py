@@ -22,6 +22,12 @@ from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
 
+# 表达式编辑目标为"全局"时的显示名（全局模式：一个表达式算出一个值）
+GLOBAL_EXPR = "(全局：单一结果)"
+# 零点下拉里"不设定"的固定文案
+NO_ZERO = "(不设定，显示绝对值)"
+
+
 def sanitize_name(name):
     """把物种名（文件名）转成合法的 Python 标识符，供表达式使用。
 
@@ -68,6 +74,77 @@ def expression_from_terms(terms):
         else:
             parts.append("%s %s" % (op, piece))
     return " ".join(parts).strip()
+
+
+def terms_from_expression(expr, alias=None):
+    """把表达式字符串反解析成构建器的项列表，便于再次编辑已保存的表达式。
+
+    只支持构建器自己能产出的扁平形式：若干项相加减，每项形如 变量 或
+    系数*变量（如 "TS1 - R"、"A - 0.5*B + 2*C"）。遇到括号、除法、纯常数
+    等无法用方块表示的结构则返回 None，调用方据此决定不预填，绝不猜。
+
+    alias: {变量名: 真实物种名}，用于把变量还原成方块上显示的名字。
+    """
+    import ast as _ast
+    alias = alias or {}
+    # 查表方向是「表达式里的变量名 -> 真实物种名」，这正是 alias 本身的方向
+    # {变量: 真实名}。之前写成反转 {真实名: 变量}，会导致变量名被当成物种名
+    # 显示，再次保存时又生成新变量（R_1 -> R_1_1），每开一次漂移一次。
+    inv = dict(alias)
+
+    def _const_val(n, sign=1.0):
+        """取数值常量，允许被一元 +/- 包裹；不是数字则返回 None。"""
+        if isinstance(n, _ast.Constant) and isinstance(n.value, (int, float)):
+            return float(n.value) * sign
+        if isinstance(n, _ast.UnaryOp):
+            if isinstance(n.op, _ast.USub):
+                return _const_val(n.operand, -sign)
+            if isinstance(n.op, _ast.UAdd):
+                return _const_val(n.operand, sign)
+        return None
+    try:
+        node = _ast.parse(str(expr), mode="eval").body
+    except Exception:
+        return None
+    terms = []
+
+    def walk(n, sign):
+        if isinstance(n, _ast.UnaryOp):
+            if isinstance(n.op, _ast.USub):
+                return walk(n.operand, -sign)
+            if isinstance(n.op, _ast.UAdd):
+                return walk(n.operand, sign)
+            return False
+        if isinstance(n, _ast.BinOp):
+            if isinstance(n.op, _ast.Add):
+                return walk(n.left, sign) and walk(n.right, sign)
+            if isinstance(n.op, _ast.Sub):
+                return walk(n.left, sign) and walk(n.right, -sign)
+            if isinstance(n.op, _ast.Mult):
+                # 系数可能是被一元负号包起来的常量：'-3*TS1' 解析成
+                # Mult(UnaryOp(USub, Const 3), Name)，只认 Constant 会漏掉。
+                c = _const_val(n.left)
+                var_node = n.right
+                if c is None:
+                    c = _const_val(n.right)
+                    var_node = n.left
+                if c is None or not isinstance(var_node, _ast.Name):
+                    return False
+                c = c * sign
+                terms.append({"name": inv.get(var_node.id, var_node.id),
+                              "var": var_node.id, "coef": abs(c),
+                              "op": "-" if c < 0 else "+"})
+                return True
+            return False
+        if isinstance(n, _ast.Name):
+            terms.append({"name": inv.get(n.id, n.id), "var": n.id,
+                          "coef": 1.0, "op": "-" if sign < 0 else "+"})
+            return True
+        return False
+
+    if not walk(node, 1) or not terms:
+        return None
+    return terms
 
 
 def run_application():
@@ -154,7 +231,15 @@ def run_application():
             self.energy_type = tk.StringVar(value="总自由能")
             self.unit = tk.StringVar(value="Hartree")
             self.zero_point = tk.StringVar(value="(不设定，显示绝对值)")
+            # expression 是"编辑缓冲区"（绑在输入框上），真正存储分两处：
+            #   · 全局：self.global_expr / self.global_alias（一个表达式算一个值）
+            #   · 每个文件：file_data[i]["expr"] / ["expr_alias"]
+            # 切换编辑目标时先 flush 缓冲区到旧目标，再从新目标 load 回来。
             self.expression = tk.StringVar(value="")
+            self.expr_target = tk.StringVar(value=GLOBAL_EXPR)
+            self.global_expr = ""
+            self.global_alias = {}
+            self._expr_alias = {}
             self.advanced_visible = tk.BooleanVar(value=False)
             self._drag_data = {"item": None, "idx": None}
             # 绘图用深色配色表。原代码把它写成 _refresh_preview 内的局部变量 S，
@@ -373,52 +458,78 @@ def run_application():
                                       highlightbackground=COLORS["border"], highlightthickness=1)
             expr_card.grid(row=1, column=0, sticky="ew", pady=(0, 8))
             expr_card.columnconfigure(1, weight=1)
+            # --- 第 0 行：选择"给谁搭表达式" ---
+            tk.Label(expr_card, text="编辑对象：", bg=COLORS["panel"], fg=COLORS["text"],
+                     font=(self.FONT,10)).grid(row=0, column=0, sticky="e", padx=6, pady=(8, 4))
+            tgt_row = tk.Frame(expr_card, bg=COLORS["panel"])
+            tgt_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=6, pady=(8, 4))
+            self.expr_target_combo = ttk.Combobox(tgt_row, textvariable=self.expr_target,
+                                                  values=[GLOBAL_EXPR], state="readonly",
+                                                  width=22)
+            self.expr_target_combo.pack(side=tk.LEFT)
+            self.expr_target_combo.bind("<<ComboboxSelected>>",
+                                        lambda e: self._on_expr_target_changed())
+            ttk.Button(tgt_row, text="拖放构建", style="Accent.TButton",
+                       command=self._open_expr_builder).pack(side=tk.LEFT, padx=6)
+            ttk.Button(tgt_row, text="清除该表达式", style="Orange.TButton",
+                       command=self._clear_expr_for_target).pack(side=tk.LEFT)
+            # --- 第 1 行：零点（无自定义表达式时的回退基准） ---
             tk.Label(expr_card, text="零点：", bg=COLORS["panel"], fg=COLORS["text"],
-                     font=(self.FONT,10)).grid(row=0, column=0, sticky="e", padx=6, pady=8)
+                     font=(self.FONT,10)).grid(row=1, column=0, sticky="e", padx=6, pady=4)
             self.zero_combo = ttk.Combobox(expr_card, textvariable=self.zero_point,
-                                           values=["(不设定，显示绝对值)"], state="readonly",
+                                           values=[NO_ZERO], state="readonly",
                                            width=24)
-            self.zero_combo.grid(row=0, column=1, sticky="ew", padx=6, pady=8)
+            self.zero_combo.grid(row=1, column=1, sticky="ew", padx=6, pady=4)
             self.zero_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_all())
             ttk.Button(expr_card, text="设为表达式", style="Teal.TButton",
-                       command=self._use_zero_in_expr).grid(row=0, column=2, padx=6, pady=8)
+                       command=self._use_zero_in_expr).grid(row=1, column=2, padx=6, pady=4)
+            # --- 第 2 行：表达式（可直接手写，也可由构建器写入） ---
             tk.Label(expr_card, text="表达式：", bg=COLORS["panel"], fg=COLORS["text"],
-                     font=(self.FONT,10)).grid(row=1, column=0, sticky="e", padx=6, pady=8)
+                     font=(self.FONT,10)).grid(row=2, column=0, sticky="e", padx=6, pady=4)
             expr_entry = tk.Entry(expr_card, textvariable=self.expression,
                                   font=(self.MONO,12, "bold"), fg=COLORS["accent"],
                                   bg="#fbfaff", relief="solid", highlightthickness=1,
                                   highlightbackground=COLORS["border"])
-            expr_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=8)
+            expr_entry.grid(row=2, column=1, sticky="ew", padx=6, pady=4)
             expr_entry.bind("<KeyRelease>", lambda e: self._refresh_all())
-            ttk.Button(expr_card, text="拖放构建", style="Accent.TButton",
-                       command=self._open_expr_builder).grid(row=1, column=2, padx=6, pady=8)
-            tk.Label(expr_card, text="提示：可直接手写（如 TS1 - R），或点「拖放构建」用鼠标拖出表达式",
+            self.expr_target_hint = tk.Label(expr_card, text="", bg=COLORS["panel"],
+                                             fg=COLORS["subtext"], font=(self.FONT,9))
+            self.expr_target_hint.grid(row=2, column=2, sticky="w", padx=6, pady=4)
+            tk.Label(expr_card,
+                     text="提示：选「某个文件」= 给该文件单独搭表达式（最终结果就是它的相对能量）；"
+                          "选「全局」= 只算一个值。可手写，也可点「拖放构建」用鼠标拖。",
                      bg=COLORS["panel"], fg=COLORS["subtext"], font=(self.FONT,8),
-                     anchor="w").grid(row=2, column=0, columnspan=3, sticky="ew", padx=6, pady=(0, 6))
+                     anchor="w", wraplength=760, justify="left"
+                     ).grid(row=3, column=0, columnspan=3, sticky="ew", padx=6, pady=(0, 6))
             self.expr_result = tk.Label(expr_card, text="", bg=COLORS["panel"],
                                         fg=COLORS["primary_d"], font=(self.FONT,10, "bold"),
                                         anchor="w")
-            self.expr_result.grid(row=3, column=0, columnspan=3, sticky="ew", padx=6, pady=(0, 8))
+            self.expr_result.grid(row=4, column=0, columnspan=3, sticky="ew", padx=6, pady=(0, 8))
             preview_card = tk.LabelFrame(parent, text="相对能量预览", bg=COLORS["panel"],
                                          fg=COLORS["primary_d"], font=(self.FONT,10, "bold"),
                                          highlightbackground=COLORS["border"], highlightthickness=1)
             preview_card.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
             preview_card.rowconfigure(0, weight=1)
             preview_card.columnconfigure(0, weight=1)
-            pcols = ("显示顺序", "物种", "原始能量(Hartree)", "相对能量", "单位")
+            pcols = ("显示顺序", "物种", "原始能量(Hartree)", "相对能量", "单位",
+                     "自定义表达式")
             self.preview_tree = ttk.Treeview(preview_card, columns=pcols, show="headings",
                                             height=6)
             for col in pcols:
                 self.preview_tree.heading(col, text=col)
                 if col == "物种":
-                    self.preview_tree.column(col, width=150, anchor="w")
+                    self.preview_tree.column(col, width=130, anchor="w")
                 elif col == "显示顺序":
                     self.preview_tree.column(col, width=60, anchor="center")
                 elif col == "单位":
                     self.preview_tree.column(col, width=80, anchor="center")
+                elif col == "自定义表达式":
+                    self.preview_tree.column(col, width=190, anchor="w")
                 else:
-                    self.preview_tree.column(col, width=150, anchor="center")
+                    self.preview_tree.column(col, width=130, anchor="center")
             self.preview_tree.tag_configure("zero", background=COLORS["yellow"])
+            # 自己搭了表达式的行用另一种底色标出，一眼看出哪些是定制的
+            self.preview_tree.tag_configure("custom", background=COLORS["row_alt"])
             self.preview_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
             plot_card = tk.LabelFrame(parent, text="反应坐标能量剖面图 (Reaction Profile)",
                                       bg=COLORS["panel"], fg=COLORS["primary_d"],
@@ -542,9 +653,14 @@ def run_application():
                 self.statusbar.config(text="列表已清空")
 
         @staticmethod
+        @staticmethod
         def _new_entry(path, name):
+            # expr / expr_alias：该文件专属的表达式与变量别名表。
+            # 每个文件都能自己搭一套表达式来算自己的相对能量，
+            # 没搭的则回退到"原始能量 - 零点"的老逻辑。
             return {"path": path, "name": name, "scf": None, "gibbs": None,
-                    "free": None, "status": "待处理"}
+                    "free": None, "status": "待处理",
+                    "expr": "", "expr_alias": {}}
 
         def update_treeview(self):
             self.tree.delete(*self.tree.get_children())
@@ -722,45 +838,64 @@ def run_application():
             return [d["name"] for d in self.file_data]
 
         def _relative_results(self):
+            """计算各物种最终显示的相对能量。
+
+            优先级：
+              1. 该文件自己搭了表达式 -> 用表达式结果作为它的相对能量
+                 （表达式里已经写明减谁，所以不再重复减零点）
+              2. 没搭 -> 回退到"原始能量 - 零点"的老逻辑
+              3. 若所有文件都没搭，且填了全局表达式 -> 只算一个值（旧行为）
+            """
             energy_map = self._current_energy_map()
-            # 构建器可能把含空格等非法字符的文件名换成合法标识符，
-            # 这里把别名也并入能量表，表达式里的新名字才能被解析。
-            alias = getattr(self, "_expr_alias", None)
-            if alias:
-                for var, real in alias.items():
-                    if real in energy_map and var not in energy_map:
-                        energy_map[var] = energy_map[real]
             unit = self.unit.get()
             zero_sel = self.zero_point.get()
-            expr = self.expression.get().strip()
-            zero_name = None
-            if expr:
-                evaluator = EnergyExpressionEvaluator(energy_map)
-                val_hartree = evaluator.evaluate(expr)
-                rel = val_hartree * (HARTREE_TO_KCAL if unit == "kcal/mol" else 1.0)
-                return {"zero_name": None, "unit": unit, "mode": "expr",
-                        "points": [(f"{expr} =", 1, val_hartree, rel, False)],
-                        "value_hartree": val_hartree}
+            fac = HARTREE_TO_KCAL if unit == "kcal/mol" else 1.0
+            zero_name, zero_val = None, None
+            if zero_sel != NO_ZERO and zero_sel in energy_map:
+                zero_name, zero_val = zero_sel, energy_map[zero_sel]
+
+            # ---- 只有全部文件都没自定义表达式时，才走全局单一结果模式 ----
+            if not self._has_custom_expr():
+                expr = (self.global_expr or "").strip()
+                if expr:
+                    emap = dict(energy_map)
+                    for v, real in (self.global_alias or {}).items():
+                        if real in emap and v not in emap:
+                            emap[v] = emap[real]
+                    val_hartree = EnergyExpressionEvaluator(emap).evaluate(expr)
+                    rel = val_hartree * fac
+                    return {"zero_name": None, "unit": unit, "mode": "expr",
+                            "points": [(f"{expr} =", 1, val_hartree, rel, False, expr)],
+                            "value_hartree": val_hartree}
+
+            # ---- 列表模式：逐个物种算 ----
             order = self._custom_order()
             ordered = [n for n in order if n in energy_map and energy_map[n] is not None]
-            zero_val = None
-            if zero_sel != "(不设定，显示绝对值)" and zero_sel in energy_map:
-                zero_name = zero_sel
-                zero_val = energy_map[zero_sel]
             points = []
             for i, name in enumerate(ordered, start=1):
                 raw = energy_map[name]
-                if zero_val is not None:
-                    rel = (raw - zero_val)
-                    is_zero = (name == zero_name)
-                else:
-                    rel = raw
+                d = self._find_by_name(name)
+                ex = ((d.get("expr") or "").strip() if d else "")
+                if ex:
+                    emap = dict(energy_map)
+                    for v, real in (d.get("expr_alias") or {}).items():
+                        if real in emap and v not in emap:
+                            emap[v] = emap[real]
+                    # 表达式自身就是"相对谁"，结果直接作为相对能量
+                    rel = EnergyExpressionEvaluator(emap).evaluate(ex) * fac
                     is_zero = False
-                disp = rel * (HARTREE_TO_KCAL if unit == "kcal/mol" else 1.0)
-                points.append((name, i, raw, disp, is_zero))
-            return {"zero_name": zero_name, "unit": unit, "mode": "list", "points": points}
+                else:
+                    base = (raw - zero_val) if zero_val is not None else raw
+                    rel = base * fac
+                    is_zero = (name == zero_name)
+                points.append((name, i, raw, rel, is_zero, ex))
+            return {"zero_name": zero_name, "unit": unit, "mode": "list",
+                    "points": points}
 
         def _refresh_all(self):
+            # 输入框里的内容先落到当前编辑对象上，后续计算才读得到
+            self._save_expr_to_target()
+            self._refresh_expr_target_options()
             self._refresh_zero_options()
             self._refresh_order_tree()
             self._refresh_preview()
@@ -775,13 +910,96 @@ def run_application():
             if current not in opts:
                 self.zero_point.set("(不设定，显示绝对值)")
 
+        # ---------- 表达式的分文件存储 ----------
+        def _find_by_name(self, name):
+            return next((d for d in self.file_data if d["name"] == name), None)
+
+        def _expr_target_file(self):
+            """当前编辑目标对应的文件条目；全局模式返回 None。"""
+            t = self.expr_target.get()
+            if t == GLOBAL_EXPR or not t:
+                return None
+            return self._find_by_name(t)
+
+        def _save_expr_to_target(self):
+            """把输入框里的表达式与别名保存到当前目标（切换目标/刷新前调用）。"""
+            d = self._expr_target_file()
+            val = self.expression.get().strip()
+            alias = dict(getattr(self, "_expr_alias", {}) or {})
+            if d is None:
+                self.global_expr = val
+                self.global_alias = alias
+            else:
+                d["expr"] = val
+                d["expr_alias"] = alias
+
+        def _load_expr_from_target(self):
+            """从当前目标读出已保存的表达式，填进输入框（不触发刷新）。"""
+            d = self._expr_target_file()
+            if d is None:
+                self.expression.set(self.global_expr)
+                self._expr_alias = dict(self.global_alias or {})
+            else:
+                self.expression.set(d.get("expr", "") or "")
+                self._expr_alias = dict(d.get("expr_alias") or {})
+
+        def _on_expr_target_changed(self):
+            """切换编辑对象：先存旧的，再载入新的。"""
+            self._save_expr_to_target()
+            self._load_expr_from_target()
+            self._refresh_all()
+
+        def _refresh_expr_target_options(self):
+            names = [d["name"] for d in self.file_data]
+            opts = [GLOBAL_EXPR] + names
+            cur = self.expr_target.get()
+            self.expr_target_combo.config(values=opts)
+            if cur not in opts:
+                # 目标文件被删掉了，退回全局并重新载入
+                self.expr_target.set(GLOBAL_EXPR)
+                self._load_expr_from_target()
+            hint = "整体算一个值" if self.expr_target.get() == GLOBAL_EXPR else "该文件的最终相对能量"
+            self.expr_target_hint.config(text=hint)
+
+        def _has_custom_expr(self):
+            return any((d.get("expr") or "").strip() for d in self.file_data)
+
+        def _clear_expr_for_target(self):
+            """清除当前编辑对象已保存的表达式。"""
+            d = self._expr_target_file()
+            who = self.expr_target.get()
+            if d is None:
+                self.global_expr = ""
+                self.global_alias = {}
+            else:
+                d["expr"] = ""
+                d["expr_alias"] = {}
+            self._expr_alias = {}
+            self.expression.set("")
+            self._refresh_all()
+            self.statusbar.config(text=f"已清除 {who} 的表达式")
+
         def _open_expr_builder(self):
-            """打开可视化表达式构建器（拖放即可，无需输入）。"""
+            """打开可视化表达式构建器（拖放即可，无需输入）。
+
+            构建结果保存到"当前编辑对象"：选了某个文件就存到该文件上，
+            选全局就存到全局。这样每个文件都能有自己的一套表达式。
+            """
             names = [d["name"] for d in self.file_data if self._has_energy(d)]
             if not names:
                 messagebox.showinfo("提示", "还没有可参与计算的物种，请先添加并完成提取。")
                 return
-            ExpressionBuilder(self)
+            self._save_expr_to_target()
+            d = self._expr_target_file()
+            try:
+                ExpressionBuilder(self, None if d is None else d["name"])
+            except Exception as e:
+                # 构建失败时明确告知，而不是丢一个空白窗口让人无从判断
+                import traceback
+                traceback.print_exc()
+                messagebox.showerror("构建器打开失败",
+                                     f"{type(e).__name__}: {e}\n\n"
+                                     f"详细堆栈已打印到控制台。")
 
         def _use_zero_in_expr(self):
             z = self.zero_point.get()
@@ -824,7 +1042,7 @@ def run_application():
                     fg=COLORS["primary_d"])
                 self.preview_tree.insert("", "end", values=(
                     "-", result["points"][0][0], f"{hartree:.6f}",
-                    f"{v:+.4f}", unit), tags=("zero",))
+                    f"{v:+.4f}", unit, self.global_expr), tags=("zero",))
                 return
             zero_name = result["zero_name"]
             if zero_name:
@@ -835,10 +1053,17 @@ def run_application():
                 self.expr_result.config(
                     text="未设零点：显示各物种该能量类型的原始值（无相对意义）",
                     fg=COLORS["subtext"])
-            for name, order, raw, disp, is_zero in result["points"]:
+            for row in result["points"]:
+                name, order, raw, disp, is_zero = row[0], row[1], row[2], row[3], row[4]
+                ex = row[5] if len(row) > 5 else ""
+                tags = []
+                if is_zero:
+                    tags.append("zero")
+                elif ex:
+                    tags.append("custom")
                 self.preview_tree.insert("", "end", values=(
-                    order, name, f"{raw:.6f}", f"{disp:+.4f}", unit),
-                    tags=("zero" if is_zero else ""))
+                    order, name, f"{raw:.6f}", f"{disp:+.4f}", unit, ex or "—"),
+                    tags=tuple(tags))
 
         S = {"bg": "#070b19", "cyan": "#00f0ff", "lime": "#39ff14",
              "grid": "#1c2740", "txt": "#c9d8ff", "sub": "#6f86c2",
@@ -1215,13 +1440,17 @@ def run_application():
                         w.writerow(["表达式", "原始能量(Hartree)",
                                     f"相对能量({result['unit']})"])
                         p = result["points"][0]
-                        w.writerow([self.expression.get(), p[2], f"{p[3]:.6f}"])
+                        w.writerow([self.global_expr, p[2], f"{p[3]:.6f}"])
                     else:
                         w.writerow(["显示顺序", "物种", "原始能量(Hartree)",
-                                    f"相对能量({result['unit']})", "是否零点"])
-                        for name, order, raw, disp, is_zero in result["points"]:
+                                    f"相对能量({result['unit']})", "是否零点",
+                                    "自定义表达式"])
+                        for row in result["points"]:
+                            name, order, raw, disp, is_zero = (
+                                row[0], row[1], row[2], row[3], row[4])
+                            ex = row[5] if len(row) > 5 else ""
                             w.writerow([order, name, f"{raw:.6f}", f"{disp:+.6f}",
-                                        "是" if is_zero else ""])
+                                        "是" if is_zero else "", ex])
                 messagebox.showinfo("成功", f"相对能量 CSV 已保存至：{path}")
             except Exception as e:
                 messagebox.showerror("错误", f"导出失败：{e}")
@@ -1262,9 +1491,12 @@ def run_application():
         COEF_CYCLE = (1.0, 0.5, 2.0, 3.0, 0.25)
         CHIP_W = 182
 
-        def __init__(self, app):
+        def __init__(self, app, target_name=None):
             self.app = app
+            # target_name=None 表示编辑"全局"；否则是这个文件的专属表达式
+            self.target_name = target_name
             self.terms = []            # [{name, var, coef, op}, ...]
+            self.alias = {}            # 该表达式自己的 {变量名: 真实物种名}
             self.pool_names = []
             self.pool_chips = []
             self.build_chips = []
@@ -1273,11 +1505,11 @@ def run_application():
             self.drag = {"active": False, "source": None, "payload": None,
                          "tip": None, "name": ""}
             self.expr = ""
-            self.app._expr_alias = {}
             self.expr_text = tk.StringVar(value="")
             self.result_text = tk.StringVar(value="—")
             self.win = tk.Toplevel(app.root)
-            self.win.title("表达式构建器 · 拖方块搭表达式")
+            who = "全局" if target_name is None else target_name
+            self.win.title(f"表达式构建器 · 编辑对象：{who}")
             self.win.geometry("1000x680")
             self.win.minsize(860, 560)
             self.win.configure(bg=COLORS["bg"])
@@ -1285,6 +1517,7 @@ def run_application():
             self.win.protocol("WM_DELETE_WINDOW", self._close)
             self._build()
             self._refresh_pool()
+            self._preload()
             self._render()
 
         # ---------------- 界面骨架 ----------------
@@ -1297,6 +1530,13 @@ def run_application():
             tk.Label(top, text="按住左边的小方块拖到右边，像搭积木一样拼出表达式",
                      bg=COLORS["primary_d"], fg="#cdd7ff",
                      font=(self.app.FONT, 9)).pack(side=tk.LEFT, padx=8)
+            # 注意：这里必须用 self.target_name。之前误写成裸名 target_name，
+            # 而它只是 __init__ 的参数、不在 _build 作用域内，会抛 NameError
+            # 并中断整个 _build —— 表现就是只剩顶部横幅、下面一片空白。
+            tk.Label(top, text=("编辑对象：全局" if self.target_name is None
+                                else f"编辑对象：{self.target_name}"),
+                     bg=COLORS["primary_d"], fg="#ffd166",
+                     font=(self.app.FONT, 10, "bold")).pack(side=tk.RIGHT, padx=16)
 
             body = tk.Frame(self.win, bg=COLORS["bg"])
             body.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -1396,7 +1636,7 @@ def run_application():
                 v = "%s_%d" % (base, k)
                 k += 1
             if v != real:
-                self.app._expr_alias[v] = real
+                self.alias[v] = real
             return v
 
         def _insert_term(self, name, idx=None):
@@ -1439,17 +1679,60 @@ def run_application():
 
         def _clear(self):
             self.terms = []
-            self.app._expr_alias = {}
+            self.alias = {}
             self._render()
 
+        def _preload(self):
+            """把该对象已保存的表达式反解析回方块，方便接着改。
+
+            只还原构建器自己能表示的形式（加减 + 系数）；遇到括号、除法等
+            复杂结构就放弃预填，绝不猜出一个错的来。
+            """
+            if self.target_name is None:
+                saved = (getattr(self.app, "global_expr", "") or "").strip()
+                saved_alias = dict(getattr(self.app, "global_alias", {}) or {})
+            else:
+                d = self.app._find_by_name(self.target_name)
+                if d is None:
+                    return
+                saved = (d.get("expr") or "").strip()
+                saved_alias = dict(d.get("expr_alias") or {})
+            if not saved:
+                return
+            self.alias = dict(saved_alias)
+            parsed = terms_from_expression(saved, saved_alias)
+            if not parsed:
+                return
+            self.terms = []
+            for t in parsed:
+                self.terms.append({"name": t["name"], "var": self._var_for(t["name"]),
+                                   "coef": t["coef"], "op": t["op"]})
+
         def _apply(self):
+            """把搭好的表达式保存到编辑对象上（每个文件各存一份）。"""
             if not self.terms:
                 messagebox.showinfo("提示", "构建区还是空的，请先从左边拖入方块。",
                                     parent=self.win)
                 return
-            self.app.expression.set(self.expr)
+            if self.target_name is None:
+                self.app.global_expr = self.expr
+                self.app.global_alias = dict(self.alias)
+                msg = "已保存全局表达式：" + self.expr
+            else:
+                d = self.app._find_by_name(self.target_name)
+                if d is None:
+                    messagebox.showerror("错误", "目标物种已不存在，无法保存。",
+                                         parent=self.win)
+                    return
+                d["expr"] = self.expr
+                d["expr_alias"] = dict(self.alias)
+                msg = f"已保存 {self.target_name} 的表达式：{self.expr}"
+            # 主窗口若正编辑同一对象，把输入框同步成新表达式
+            cur = self.app.expr_target.get()
+            if cur == (self.target_name or GLOBAL_EXPR):
+                self.app._load_expr_from_target()
             self.app._refresh_all()
-            self.app.statusbar.config(text="已应用表达式：" + self.expr)
+            self.app.statusbar.config(text=msg)
 
         def _close(self):
             self._unbind_drag()
@@ -1672,7 +1955,7 @@ def run_application():
                 self.result_text.set("—")
                 return
             emap = dict(self.app._current_energy_map())
-            for v, real in getattr(self.app, "_expr_alias", {}).items():
+            for v, real in self.alias.items():
                 if real in emap and v not in emap:
                     emap[v] = emap[real]
             try:

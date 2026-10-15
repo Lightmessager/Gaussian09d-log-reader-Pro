@@ -1,0 +1,9 @@
+SYNTHETIC S0 FIXTURE - not a complete Gaussian output
+Entering Gaussian System
+ SCF Done: E(RB3LYP) = -75.000000000 A.U.
+ Thermal correction to Gibbs Free Energy= 0.020000000
+ Sum of electronic and thermal Free Energies= -74.980000000
+ Normal termination of Gaussian 16
+Entering Gaussian System
+ SCF Done: E(RB3LYP) = -76.000000000 A.U.
+ Error termination via Lnk1e

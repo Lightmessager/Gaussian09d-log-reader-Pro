@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "provenance": "manually authored synthetic excerpts; not real Gaussian logs",
+  "cases": [
+    {"path":"logs/normal_opt_freq.log","jobs":[{"start_line":2,"end_line":8,"termination":"normal","energies":{"scf":{"value":"-100.200000000","line":5},"gibbs_correction":{"value":"0.030000000","line":6},"gibbs_total":{"value":"-100.170000000","line":7}}}],"default_job":{"scf":0,"gibbs_correction":0,"gibbs_total":0}},
+    {"path":"logs/single_point.log","jobs":[{"start_line":2,"end_line":5,"termination":"normal","energies":{"scf":{"value":"-40.125000000","line":4}}}],"default_job":{"scf":0,"gibbs_correction":null,"gibbs_total":null}},
+    {"path":"logs/multi_job.log","jobs":[{"start_line":2,"end_line":7,"termination":"normal","energies":{"scf":{"value":"-100.200000000","line":4},"gibbs_correction":{"value":"0.030000000","line":5},"gibbs_total":{"value":"-100.170000000","line":6}}},{"start_line":8,"end_line":11,"termination":"normal","energies":{"scf":{"value":"-101.000000000","line":10}}}],"default_job":{"scf":1,"gibbs_correction":0,"gibbs_total":0}},
+    {"path":"logs/last_job_failed.log","jobs":[{"start_line":2,"end_line":6,"termination":"normal","energies":{"scf":{"value":"-75.000000000","line":3},"gibbs_correction":{"value":"0.020000000","line":4},"gibbs_total":{"value":"-74.980000000","line":5}}},{"start_line":7,"end_line":9,"termination":"error","energies":{"scf":{"value":"-76.000000000","line":8}}}],"default_job":{"scf":0,"gibbs_correction":0,"gibbs_total":0},"warnings":["later_job_not_normal"]},
+    {"path":"logs/truncated.log","jobs":[{"start_line":2,"end_line":4,"termination":"incomplete","energies":{"scf":{"value":"-20.000000000","line":3}}}],"default_job":{"scf":null,"gibbs_correction":null,"gibbs_total":null}},
+    {"path":"logs/exponent_values.log","jobs":[{"start_line":2,"end_line":6,"termination":"normal","energies":{"scf":{"value":"-100.200000000","line":3},"gibbs_correction":{"value":"0.030000000","line":4},"gibbs_total":{"value":"-100.170000000","line":5}}}],"default_job":{"scf":0,"gibbs_correction":0,"gibbs_total":0}},
+    {"path":"logs/unrecognized.log","jobs":[{"start_line":2,"end_line":4,"termination":"normal","energies":{}}],"default_job":{"scf":null,"gibbs_correction":null,"gibbs_total":null}},
+    {"path":"logs/目录 A/species.log","jobs":[{"start_line":2,"end_line":4,"termination":"normal","energies":{"scf":{"value":"-10.000000000","line":3}}}],"default_job":{"scf":0,"gibbs_correction":null,"gibbs_total":null}},
+    {"path":"logs/目录 B/species.log","jobs":[{"start_line":2,"end_line":4,"termination":"normal","energies":{"scf":{"value":"-11.000000000","line":3}}}],"default_job":{"scf":0,"gibbs_correction":null,"gibbs_total":null}}
+  ],
+  "calculation": {
+    "unit_factor_kcal":"627.509474063",
+    "reference_hartree":"-150.0",
+    "nodes":[
+      {"label":"R","absolute_hartree":"-150.0","relative_hartree":"0.0","relative_kcal":"0.0"},
+      {"label":"TS1","absolute_hartree":"-149.976","relative_hartree":"0.024","relative_kcal":"15.060227377512"},
+      {"label":"I1","absolute_hartree":"-150.008","relative_hartree":"-0.008","relative_kcal":"-5.020075792504"},
+      {"label":"P","absolute_hartree":"-150.025","relative_hartree":"-0.025","relative_kcal":"-15.687736851575"}
+    ]
+  }
+}

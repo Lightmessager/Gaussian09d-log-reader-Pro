@@ -1,189 +1,78 @@
-# Gaussian LogReader Pro
+# GaussianReadPro
 
-**A desktop tool for batch-extracting thermodynamic data from Gaussian `.log` files, with relative-energy calculation and reaction-profile plotting.**
+A desktop workbench for reading Gaussian output files and building auditable reaction energy profiles.
 
-![Python](https://img.shields.io/badge/Python-3.9%20--%203.14-blue) ![GUI](https://img.shields.io/badge/GUI-Tkinter-orange) ![Status](https://img.shields.io/badge/Status-Active%20Development-green)
+**GaussianReadPro** parses Gaussian `.log` files locally, organizes calculations by source and job, and helps you compare structures with explicit energy expressions and references. The interface supports Chinese and English.
 
----
+[简体中文](#简体中文) · [English](#english)
 
-## Declaration
+## Download
 
-> This program was designed by me, and the code was written by **Tencent Hy4preview**.
->
-> A dedicated **English version, shipped as a standalone `.exe`**, is planned for the future. The project is still being improved, and more features will arrive together with that English release.
->
-> For now you can use it as-is, provided your computer already has **Python installed with `numpy` and `matplotlib`**.
->
-> **To get started:** download the two files (`app.py` and `launcher.py`), then run **`launcher.py`** — it will help you set up the environment and choose which Python interpreter to use.
+**Windows x64 preview:** [Download GaussianReadPro v0.1.0-beta.1](https://github.com/Lightmessager/Gaussian09d-log-reader-Pro/releases/download/v0.1.0-beta.1/GaussianReadPro-Windows-x64-portable.zip)
 
-<details>
-<summary><b>声明（中文）</b></summary>
+Extract the ZIP and run `GaussianReadPro/GaussianReadPro.exe`. Keep the complete folder together; the executable depends on the bundled `_internal` directory. This is a portable folder, not an installer, and this local build is not code-signed.
 
-> 本程序由我本人设计，代码由 **腾讯 Hy4preview** 编写。
->
-> 未来会发布**独立的英文 `.exe` 版本**。项目仍在持续改进，更多功能将随英文版一同推出。
->
-> 现在即可使用，前提是电脑上已安装 **Python，并带有 `numpy` 和 `matplotlib`**。
->
-> **使用方法：** 下载两个文件（`app.py` 与 `launcher.py`），然后运行 **`launcher.py`**，它会帮你搭建环境并选择使用哪个 Python 解释器。
+If the app crashes on this particular host with the default CPU scheduler, try `Launch-GaussianReadPro-compat.cmd` inside the extracted folder. It only sets CPU affinity for the app and its child processes.
 
-</details>
+## Highlights
 
----
+- Batch import Gaussian `.log` files and inspect parsed energies, jobs, and source evidence.
+- Build per-structure relative-energy expressions and explicit reference systems.
+- Explore interactive, smoothed 2D and 3D reaction energy profiles, compare paths, and inspect selected structures.
+- Save and restore projects, workspaces, language, theme, and chart view state.
+- Export chart images, standalone HTML, tables, and source-audit data.
+- Use Chinese or English UI; chart resources are bundled for offline operation.
 
-## Overview
+## Screenshots and design
 
-Gaussian `.log` files contain a lot of text, but the numbers you actually need — SCF energy, thermal correction to Gibbs free energy, and the total free energy — are buried in it. Copying them one by one by hand is slow and error-prone.
+The application icon and visual design source files are in [`src/gaussianreadpro/resources/icons/`](src/gaussianreadpro/resources/icons/) and [`docs/design/`](docs/design/).
 
-This tool scans a batch of `.log` files at once, pulls out those three values, and then lets you:
+## Run from source
 
-- compute **relative energies** against any reference species you pick,
-- build **arithmetic expressions** between species (by typing, or by dragging blocks),
-- plot a **reaction-coordinate energy profile** and export it,
-- save everything to **CSV**.
+The supported development environment currently targets **Python 3.12**. In PowerShell from the repository root:
 
-Everything runs locally in a Tkinter window — no server, no account, no network.
-
----
-
-## Features
-
-### Extraction
-- Add individual files or an entire folder (recursively picks up `.log` files).
-- Batch extraction with a progress bar and per-file status.
-- Extracts three values per file:
-  - **SCF energy** (`SCF Done: E(...) = ...`)
-  - **Thermal correction to Gibbs Free Energy**
-  - **Sum of electronic and thermal Free Energies** (total free energy)
-- Unit conversion: **Hartree ⇄ kcal/mol** (factor `627.509474063`).
-
-### Relative energy
-- Pick any species as the **zero point**; all others are shown relative to it.
-- Or type an **expression** directly, e.g. `TS1 - R`, `A - 0.5*B + 2*C`.
-
-### Drag-and-drop expression builder
-- A separate window with a **species palette** on the left and a **build area** on the right.
-- Drag species blocks across like building with Lego bricks.
-- Each block has a **+/− toggle**, a **coefficient** control (`1 / 0.5 / 2 / 3 / 0.25`), and a delete button.
-- Drag existing blocks to **reorder** them; drag one back to the left panel to remove it.
-- The generated expression and its live result are shown at the bottom.
-
-### Per-file expressions (each file keeps its own)
-- Choose **which species you are editing** from the *Edit target* dropdown.
-- Every file can store **its own expression**, so each one gets its own final relative energy.
-- Reopening the builder **restores the saved expression back into blocks** so you can keep editing.
-- Files without a custom expression fall back to the classic `energy − zero point` behaviour.
-
-### Reaction profile plot
-- Rendered in the main window, or opened in a **larger standalone window**.
-- Dense x-axis labels are automatically **thinned** (long names truncated, extra ticks reduced to numbers) so a 40-species profile stays readable.
-
-### Custom order
-- Drag rows to reorder species; this also sets the reaction-coordinate order used by the plot.
-
-### Export
-- Export the extraction table to CSV.
-- Export relative-energy results to CSV (includes a *custom expression* column).
-- Save the profile chart as PNG / PDF / SVG.
-
----
-
-## Requirements
-
-| Item | Notes |
-|---|---|
-| Python | 3.9 – 3.13 recommended |
-| `tkinter` | Usually bundled with Python on Windows; if missing, reinstall Python and tick *"tcl/tk and IDLE"* |
-| `numpy` | Installed automatically by the launcher if missing |
-| `matplotlib` | Installed automatically by the launcher if missing (≥ 3.5) |
-
-> The **launcher detects all of this for you** and can install the missing packages with one click. You do not need to set anything up by hand.
-
----
-
-## Getting Started
-
-1. **Download** `app.py` and `launcher.py` into the **same folder**.
-2. **Run the launcher:**
-   ```bash
-   python launcher.py
-   ```
-   (Or double-click `launcher.py` on Windows.)
-3. The launcher scans every Python interpreter on your machine and reports each one's dependency status:
-   - `Available · dependencies ready` → ready to use
-   - `Available · needs: matplotlib, numpy` → click **Install missing dependencies**
-   - `Unavailable: missing tkinter` → reinstall that Python with *tcl/tk and IDLE* enabled
-4. Select an interpreter and click **Launch**.
-
-If the dependencies are already complete, you can also run the program directly:
-
-```bash
-python app.py
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe tools\vendor_plotly.py
+.\.venv\Scripts\python.exe tools\run_app.py
 ```
 
----
+To open an existing project, pass its `.grproj` path to `tools\run_app.py`. See [`docs/handoff.md`](docs/handoff.md) and [`AI_HANDOFF.md`](AI_HANDOFF.md) for implementation details.
 
-## Usage
+## Build the Windows portable package
 
-### Basic panel
-1. **Add files** / **Add folder** — load your `.log` files.
-2. **▶ Start extraction** — parse them and fill the result table.
-3. **Export table** — save the raw extracted values as CSV.
+On Windows with Python 3.12 and the locked dependencies:
 
-Tick **Advanced features** in the top-right to reveal two extra tabs.
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe tools\build_windows.py
+.\.venv\Scripts\python.exe tools\check_windows_bundle.py
+```
 
-### Tab: Energy calculation & profile
-- **Energy type**: SCF energy / Gibbs thermal correction / total free energy.
-- **Unit**: Hartree or kcal/mol.
-- **Zero point**: the reference species; leave unset to show absolute values.
-- **Edit target**: pick *Global* (one single result) or a specific file (that file's own expression).
-- **Expression**: type it by hand, or click **Drag-to-build** to open the block builder.
-- Buttons: *Refresh*, *Export relative-energy CSV*, *Save chart*, **Open chart in new window**, *Apply to all*.
+The build writes `dist/GaussianReadPro/` and `artifacts/releases/GaussianReadPro-Windows-x64-portable.zip`. Package verification details are in [`docs/windows-package-validation.md`](docs/windows-package-validation.md). Replace the application artwork at `src/gaussianreadpro/resources/icons/app-icon.png` and the multi-size Windows icon at `packaging/GaussianReadPro.ico`, then rebuild to customize the icon.
 
-### Tab: Custom order
-- Drag rows to reorder species, then confirm. This order drives the profile plot's x-axis.
+## Platform status
 
----
+The current preview package and native GUI verification target Windows 11 x64. The codebase is designed around Qt, but macOS, Linux, and other Windows versions have not yet been packaged and validated. Do not treat the Windows build as a cross-platform release.
 
-## Tips
+## 简体中文
 
-- **Species names come from file names.** Names containing spaces or hyphens (e.g. `TS 1`, `int-2`) are converted into valid identifiers (`TS_1`, `int_2`) automatically, and the mapping is stored alongside the expression — so you never have to rename your files.
-- **Expressions support** `+ - * /`, parentheses, and coefficients. Only the flat `A ± coef*B ± ...` form can be restored into blocks; anything more complex (division, nested parentheses) is left for manual editing rather than guessed at.
-- **Best interpreter choice:** Python 3.13 is the safest pick. Python 3.14 is not yet fully supported by matplotlib on all builds.
-- **First run in the launcher:** the log panel prints your Tk version and the detected UI font. If text ever shows as boxes, that line tells you exactly why.
+GaussianReadPro 是用于读取 Gaussian 输出文件并构建可追溯反应能量剖面的桌面工作台。程序在本机解析 `.log` 文件，按来源文件和计算作业整理数据，并使用明确的能量表达式与参考体系比较结构。界面支持中英文切换。
 
----
+### Windows 预览版
 
-## Troubleshooting
+下载 [GaussianReadPro v0.1.0-beta.1](https://github.com/Lightmessager/Gaussian09d-log-reader-Pro/releases/download/v0.1.0-beta.1/GaussianReadPro-Windows-x64-portable.zip)，解压后运行 `GaussianReadPro/GaussianReadPro.exe`。请保留完整文件夹及 `_internal` 目录。本版本是免安装便携包，不是安装程序；当前本机构建未进行数字签名。
 
-| Symptom | Cause / Fix |
-|---|---|
-| `AttributeError: 'Frame' object has no attribute 'winfo_descendants'` | Your Python ships Tcl/Tk 8.5. Already handled — the code now walks widgets with `winfo_children()` instead. |
-| Chinese text shows as **boxes / tofu** | The requested font is not actually installed. The launcher probes real fonts via `actual("family")` and falls back automatically. |
-| Launcher **status column shows `???`** | Caused by a subprocess writing GBK while the parent decodes UTF-8. Fixed — the probe now returns ASCII status codes and translates them in the parent process. |
-| Chinese species names show as boxes **in the chart** | matplotlib's default font has no CJK glyphs. `Microsoft YaHei` / `SimHei` are now placed first in the font list. |
-| `Unavailable: missing tkinter` | Reinstall that Python and tick **"tcl/tk and IDLE"** during installation. |
-| Launcher lists a Python that fails with `probe failed` | Usually the Windows Store stub under `WindowsApps`. Harmless — just pick another interpreter. |
+若此电脑使用默认 CPU 调度时出现闪退，可尝试运行解压目录中的 `Launch-GaussianReadPro-compat.cmd`。该脚本只为程序及子进程设置 CPU 亲和性。
 
----
+### 主要功能
 
-## Files
+- 批量导入 Gaussian `.log` 文件，查看解析出的能量、作业和来源证据。
+- 为各结构构建相对能量表达式和显式参考体系。
+- 交互查看平滑 2D/3D 反应能量剖面、对比反应路径并检查选中结构。
+- 保存和恢复项目、工作区、语言、主题及图表视图。
+- 导出图像、独立 HTML、数据表和来源审计信息。
+- 中英文界面；运行时图表资源随程序打包，可离线使用。
 
-| File | Purpose |
-|---|---|
-| `launcher.py` | Environment wizard. Scans Python interpreters, checks/installs dependencies, then launches the app. |
-| `app.py` | The main program: extraction, relative-energy calculation, expression builder, profile plot, CSV export. |
-
-Both files must sit in the **same directory**.
-
----
-
-## Roadmap
-
-- [ ] **English version**, packaged as a standalone `.exe` (no Python required)
-- [ ] More features shipping alongside the English release
-- [ ] Continued stability and usability improvements
-
----
-
-*Designed by the author · Code by Tencent Hy4preview · Last updated 2026-09-27*
+当前预览版和原生界面验证面向 Windows 11 x64。macOS、Linux 和其他 Windows 版本尚未完成独立打包与验收。

@@ -1,0 +1,11 @@
+SYNTHETIC S0 FIXTURE - not a complete Gaussian output
+Entering Gaussian System
+ # B3LYP/6-31G(d) opt freq
+ SCF Done: E(RB3LYP) = -100.200000000 A.U.
+ Thermal correction to Gibbs Free Energy= 0.030000000
+ Sum of electronic and thermal Free Energies= -100.170000000
+ Normal termination of Gaussian 16
+Entering Gaussian System
+ # M062X/def2TZVP sp
+ SCF Done: E(RM062X) = -101.000000000 A.U.
+ Normal termination of Gaussian 16

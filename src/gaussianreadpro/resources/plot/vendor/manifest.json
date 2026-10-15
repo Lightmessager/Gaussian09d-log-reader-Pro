@@ -1,0 +1,7 @@
+{
+  "source": "plotly.offline.get_plotlyjs()",
+  "python_package_version": "7.1.0",
+  "sha256": "d1b35fcc41b2eb43a7804f6317e5c73761c26d1724810ae695690dd92a73fa1e",
+  "bytes": 4819433,
+  "license": "MIT; embedded copyright/license header retained in plotly.min.js"
+}

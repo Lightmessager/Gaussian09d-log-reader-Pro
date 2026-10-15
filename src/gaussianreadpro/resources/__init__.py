@@ -1,0 +1,1 @@
+"""Bundled offline UI resources."""

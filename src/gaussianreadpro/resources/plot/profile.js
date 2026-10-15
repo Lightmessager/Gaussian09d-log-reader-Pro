@@ -1,0 +1,341 @@
+/* Protocol 2: render only. All energies, differences and label coordinates originate in Python. */
+"use strict";
+(() => {
+const plot = document.getElementById('plot');
+Plotly.register({moduleType:'locale',name:'zh-CN',dictionary:{'Zoom':'缩放','Pan':'平移','Box Select':'框选','Lasso Select':'套索选择',
+ 'Zoom in':'放大','Zoom out':'缩小','Autoscale':'自动范围','Reset axes':'重置坐标轴','Reset camera to default':'重置相机',
+ 'Reset camera to last save':'恢复相机','Orbit rotation':'旋转','Turntable rotation':'转台旋转','Toggle Spike Lines':'辅助线',
+ 'Show closest data on hover':'悬浮显示最近点','Compare data on hover':'悬浮比较数据'},format:{decimal:'.',thousands:','}});
+let bridge = null, shown = null, pending = null, running = false, bound = false, syncing = false;
+let annotations = [], renderCount = 0, compact = false, resizePending = false, resizeFrame = 0;
+let cameraFlushTimer = 0;
+const localViewports = {};
+const esc = s => String(s == null ? '—' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const num = v => v == null ? '—' : Number(v).toPrecision(10);
+const sameCamera = (a,b) => !!a&&!!b&&['eye','center','up'].every(k=>['x','y','z'].every(axis=>
+  a[k]?.[axis]===b[k]?.[axis]||Math.abs(a[k]?.[axis]-b[k]?.[axis])<1e-7));
+const isCompact = data => data.view==='3d'&&!data.image_capture&&plot.clientHeight<360;
+function notify(type, data, payload = shown) {
+  if (bridge && payload) bridge.event(JSON.stringify({type, project_id:payload.project_id, revision:payload.revision, render_id:payload.render_id, ...data}));
+}
+function hover(p, path, data) {
+  const t = data.text;
+  const source = (p.dependencies || [])[0];
+  const rows = [`<b>${esc(path.label)}</b> · ${esc(t.node)}: ${esc(p.label)}`,
+    `<b>${esc(p.value_label)} ${esc(data.unit_label)}</b>`];
+  if (data.mode === 'relative') {
+    rows.push(`${esc(t.absolute)}: ${num(p.absolute_hartree)} Eh`);
+    rows.push(`${esc(t.reference)}: ${esc(path.reference || '—')} · ${num(p.reference_hartree)} Eh`);
+  } else if (data.mode === 'absolute') {
+    rows.push(`${esc(t.absolute)}: ${num(p.absolute_hartree)} Eh`);
+  }
+  if (source) rows.push(`${esc(t.source)}: ${esc(source.source_label)} · ${esc(t.job)} ${esc((source.job_id || '').slice(0,8))} · ${esc(t.line)} ${esc(source.source_line)}`);
+  return rows.join('<br>');
+}
+function webgl() {
+  try { const c=document.createElement('canvas'); return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch(e) { return false; }
+}
+function tint(hex, amount) {
+  const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16));
+  return 'rgb('+rgb.map(v=>Math.round(v+(255-v)*amount)).join(',')+')';
+}
+function translucent(hex, opacity) {
+  return 'rgba('+[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)).join(',')+','+opacity+')';
+}
+function ribbon(path, runs, depth, curtain=false) {
+  const x=[],y=[],z=[],i=[],j=[],k=[];
+  for(const run of runs){
+    const start=x.length;
+    for(const [step,value] of run){
+      x.push(step,step);y.push(path.category-(curtain?0:.025),path.category+(curtain?0:.085));
+      z.push(value,curtain?0:value-depth);
+    }
+    for(let n=0;n<run.length-1;n++){
+      const a=start+2*n;i.push(a,a+1);j.push(a+1,a+3);k.push(a+2,a+2);
+    }
+  }
+  return {type:'mesh3d',x,y,z,i,j,k,color:path.color,opacity:curtain?.035:.20,
+    lighting:{ambient:1,diffuse:0,specular:0,roughness:1},flatshading:true,
+    hoverinfo:'skip',showscale:false,showlegend:false,legendgroup:path.id,
+    visible:path.visible?true:'legendonly',meta:{kind:curtain?'visual-curtain':'visual-ribbon'}};
+}
+function traces(data) {
+  const all = [], labels = [], is3d = data.view === '3d';
+  if (is3d && data.paths.length) {
+    const steps=data.ticks.length?data.ticks:[0], categories=data.paths.filter(p=>p.visible).map(p=>p.category);
+    if(!categories.length)categories.push(0);
+    const x0=Math.min(...steps)-.35,x1=Math.max(...steps)+.35,y0=Math.min(...categories)-.45,y1=Math.max(...categories)+.45;
+    all.push({type:'mesh3d',name:data.text.zero_plane,x:[x0,x1,x1,x0],y:[y0,y0,y1,y1],z:[0,0,0,0],
+      i:[0,0],j:[1,2],k:[2,3],color:(data.visual_style||{}).zero||'#B9ACC9',opacity:.09,
+      lighting:{ambient:1,diffuse:0,specular:0,roughness:1},flatshading:true,hoverinfo:'skip',showscale:false,
+      showlegend:false,legendgroup:'zero-plane'});
+  }
+  const labelCount = data.paths.filter(p=>p.visible).reduce((n,p)=>n+p.points.length,0);
+  const dense2d = !is3d && (plot.clientHeight < 360 || (plot.clientWidth < 1000 && data.paths.filter(p=>p.visible).length > 1));
+  const style=data.visual_style||{},focus=style.focus||'#F4A06A';
+  const depth=(data.default_y_range[1]-data.default_y_range[0])*.035;
+  for (const path of data.paths) {
+    const visible = path.visible ? true : 'legendonly';
+    const x=[], y=[], z=[], px=[], py=[], pz=[],sx=[],sy=[],sz=[];
+    const valid=path.points.filter(p=>p.valid && p.value != null);
+    const selected=valid.filter(p=>p.selected);
+    const runs=path.curve_runs||valid.map(p=>[[p.x,p.value]]);
+    for(const run of runs){
+      for(const [step,value] of run){x.push(step);y.push(is3d?path.category:value);z.push(value);}
+      x.push(null);y.push(null);z.push(null);
+    }
+    for(const p of valid)if(is3d){
+      if(p.selected){sx.push(p.x,p.x,null);sy.push(path.category,path.category,null);sz.push(p.value,0,null);}
+      else{px.push(p.x,p.x,null);py.push(path.category,path.category,null);pz.push(p.value,0,null);}
+    }
+    const base={type:is3d?'scatter3d':'scatter',legendgroup:path.id,name:(is3d?String(path.category+1)+' · ':'')+esc(path.label)+' · '+esc(data.text.reference)+': '+esc(path.reference||'—'),visible,connectgaps:false};
+    if(is3d){all.push(ribbon(path,runs,depth,true));all.push(ribbon(path,runs,depth));}
+    for(const [width,opacity,kind] of [[is3d?20:18,data.dark?.07:.04,'curve-outer-glow'],
+      [is3d?10:9,data.dark?.19:.10,'curve-inner-glow'],[is3d?5:3,1,'visual-curve']]){
+      all.push({...base,mode:'lines',x,y,...(is3d?{z}:{}),line:{color:kind==='visual-curve'?tint(path.color,data.dark?.30:0):path.color,width},
+        opacity,hoverinfo:'skip',showlegend:false,meta:{kind}});
+    }
+    if(is3d){
+      all.push({...base,mode:'lines',x:px,y:py,z:pz,line:{color:path.color,width:1.5,dash:'dot'},
+        opacity:.42,hoverinfo:'skip',showlegend:false,meta:{kind:'node-projection'}});
+      all.push({...base,mode:'lines',x:sx,y:sy,z:sz,line:{color:focus,width:2.5,dash:'dot'},
+        opacity:.9,hoverinfo:'skip',showlegend:false,meta:{kind:'selected-projection'}});
+    }
+    const halo=(points,size,color,opacity,kind,open=false)=>({...base,mode:'markers',x:points.map(p=>p.x),
+      y:points.map(p=>is3d?path.category:p.value),...(is3d?{z:points.map(p=>p.value)}:{}),
+      marker:{size,color,symbol:open?'circle-open':'circle',line:{color,width:open?2:0}},
+      opacity,hoverinfo:'skip',showlegend:false,meta:{kind}});
+    all.push(halo(valid,is3d?18:26,path.color,.12,'node-glow'));
+    all.push(halo(selected,is3d?30:42,focus,.13,'selected-glow'));
+    all.push(halo(selected,is3d?18:25,focus,1,'selected-ring',true));
+    all.push({...base,mode:is3d?'markers+text':'markers',x:valid.map(p=>p.x),y:valid.map(p=>is3d?path.category:p.value),
+      ...(is3d?{z:valid.map(p=>p.value),text:valid.map(p=>!compact&&(labelCount<=8||p.selected||p.role==='transition_state')?`<b>${esc(p.label_short)}</b><br>${esc(p.value_label)}`:''),textposition:'top center',textfont:{size:13,color:valid.map(p=>p.selected?focus:tint(path.color,.45))}}:{}),
+      customdata:valid.map(p=>[path.id,p.entry_id,p.node_id,hover(p,path,data)]),
+      marker:{size:valid.map(p=>is3d?(p.selected?11:8):(p.selected?16:12)),
+        color:valid.map(p=>p.selected?focus:tint(path.color,data.dark?.24:0)),symbol:'circle',
+        line:{color:data.dark?'#F4EFFA':'#FFFFFF',width:is3d?1:1.5}},
+      meta:{kind:'computed-nodes'},
+      hovertemplate:'%{customdata[3]}<extra></extra>',showlegend:true});
+    if(!is3d && path.visible) for(const p of valid) if(labelCount<=40||p.selected||p.role==='transition_state') {
+      if(dense2d&&path.id!==data.active_path_id&&!p.selected)continue;
+      const range=data.viewport.y_range||data.default_y_range;
+      const upper=p.value>range[0]+(range[1]-range[0])*.65;
+      labels.push({path_id:path.id,entry_id:p.entry_id,x:p.x,y:p.value,
+        ax:dense2d?Math.max(-48,Math.min(48,p.label_offset[0])):p.label_offset[0],
+        ay:dense2d?(upper?32:-32):p.label_offset[1]});
+    }
+  }
+  return {all,labels};
+}
+async function render(data) {
+  if(data.protocol_version!==2) throw new Error('Unsupported plot protocol');
+  if(shown && data.project_id===shown.project_id && data.render_id<shown.render_id) return;
+  let fallback = '';
+  if(data.view==='3d' && (!webgl() || window.GRPR_FORCE_NO_WEBGL)) { data={...data,view:'2d'}; fallback=data.text.webgl; notify('webgl_fallback',{},data); }
+  compact = isCompact(data);
+  const narrow = plot.clientWidth < 900;
+  const compactEnergy = data.mode === 'relative'
+    ? data.kind === 'gibbs_total' ? 'ΔG' : data.kind === 'gibbs_correction' ? 'ΔGcorr' : 'ΔE'
+    : data.mode === 'direct_difference'
+      ? data.kind === 'gibbs_total' ? 'ΔG direct' : data.kind === 'gibbs_correction' ? 'ΔGcorr direct' : 'ΔE direct'
+    : data.kind === 'gibbs_total' ? 'G' : data.kind === 'gibbs_correction' ? 'Gcorr' : 'E';
+  const energyAxis = (narrow ? compactEnergy : data.energy_label) + ' / ' + data.unit_label;
+  const style=data.visual_style||{}, fg=style.foreground||(data.dark?'#dce8e2':'#234539'), bg=style.background||(data.dark?'#241E30':'#FCFAFF');
+  const grid=style.grid||(data.dark?'#40344E':'#E9E1EF'), zero=style.zero||(data.dark?'#B9ACC9':'#6E627D');
+  const {all,labels}=traces(data);
+  const visibleCategories=data.paths.filter(p=>p.visible).map(p=>p.category);
+  const sceneAxis={gridcolor:grid,zerolinecolor:zero,color:fg,showbackground:true,
+    backgroundcolor:translucent(bg,.22),showline:true,linecolor:zero,tickfont:{size:12}};
+  // A view-state save can round-trip through Qt while a native camera gesture is still settling.
+  // In an existing 3D scene, presets/reset use Plotly.relayout directly. Metadata/selection
+  // renders retain the live camera; saved cameras apply on first render or a context/view change.
+  const sameCameraContext=shown&&shown.view==='3d'&&data.view==='3d'&&shown.context===data.context;
+  const retainLiveCamera=sameCameraContext;
+  const liveScene=plot._fullLayout&&plot._fullLayout.scene&&plot._fullLayout.scene._scene;
+  const camera=retainLiveCamera&&liveScene?liveScene.getCamera():data.viewport.camera||data.default_camera;
+  if(!retainLiveCamera)clearTimeout(cameraFlushTimer);
+  annotations=labels;
+  const pointFor = a => data.paths.find(p=>p.id===a.path_id).points.find(p=>p.entry_id===a.entry_id);
+  const layout={paper_bgcolor:bg,plot_bgcolor:bg,font:{family:'Segoe UI,Microsoft YaHei,Noto Sans CJK SC,sans-serif',color:fg,size:12},
+    margin:compact?{l:12,r:12,t:28,b:15}:narrow?{l:106,r:16,t:36,b:52}:{l:76,r:24,t:45,b:60},hovermode:'closest',dragmode:data.view==='3d'?'orbit':'pan',
+    hoverlabel:{bgcolor:style.label_background||bg,bordercolor:style.label_line||zero,font:{color:fg,size:12},align:'left'},
+    modebar:{bgcolor:bg,color:zero,activecolor:style.selection||fg},
+    title:{text:esc(data.text.reference)+': '+esc((data.paths.find(p=>p.id===data.active_path_id)||{}).reference||'—'),font:{size:11},x:.02,y:.99},
+    uirevision:data.context+'/'+data.view,selectionrevision:data.context,
+    showlegend:!bridge&&!compact&&data.paths.length>1,legend:{orientation:'h',y:-.2,font:{size:12},groupclick:'togglegroup'},
+    xaxis:{title:{text:esc(data.text.step)},tickvals:data.ticks,ticktext:data.tick_labels,zeroline:false,gridcolor:grid,griddash:'dot',...(data.viewport.x_range?{range:data.viewport.x_range,autorange:false}:{})},
+    yaxis:{title:{text:esc(energyAxis)},zeroline:data.mode!=='absolute',zerolinecolor:zero,zerolinewidth:2,
+      gridcolor:grid,griddash:'dot',range:data.viewport.y_range||data.default_y_range,autorange:false},
+    shapes:data.view==='2d'?data.paths.flatMap(path=>path.points.filter(p=>p.selected&&p.valid&&p.value!=null&&path.visible).map(p=>({
+      type:'line',xref:'x',yref:'y',x0:p.x,x1:p.x,y0:(data.viewport.y_range||data.default_y_range)[0],y1:p.value,
+      line:{color:style.focus||'#F4A06A',width:1,dash:'dot'},layer:'below'}))):[],
+    annotations:labels.map(a=>{const p=pointFor(a);return {x:a.x,y:a.y,ax:a.ax,ay:a.ay,text:`<b>${esc(p.label_short)}</b><br>${esc(p.value_label)}`,
+      showarrow:true,arrowhead:0,arrowwidth:.1,arrowcolor:'rgba(0,0,0,0)',font:{color:p.selected?style.focus||'#F4A06A':fg,size:13},bgcolor:'rgba(0,0,0,0)',opacity:1};}),
+    scene:{xaxis:{...sceneAxis,title:{text:compact?'':esc(data.text.step),font:{size:11}},tickvals:data.ticks,ticktext:data.tick_labels},
+      yaxis:{...sceneAxis,title:{text:compact?'':esc(data.text.category),font:{size:11}},tickvals:visibleCategories,
+        ticktext:data.paths.filter(p=>p.visible).map(p=>String(p.label).length>20?String(p.label).slice(0,19)+'…':String(p.label)),
+        range:visibleCategories.length?[Math.min(...visibleCategories)-.5,Math.max(...visibleCategories)+.5]:[-.5,.5]},
+      zaxis:{...sceneAxis,title:{text:esc(compactEnergy)+' / '+esc(data.unit_label),font:{size:13}},nticks:compact?3:6,zeroline:true,zerolinewidth:2},
+      bgcolor:bg,aspectmode:'manual',aspectratio:{x:1.7,y:Math.max(1,Math.min(1.5,data.paths.length*.65)),z:1.25},
+      dragmode:data.camera_dragmode||'orbit',camera}}
+  if(data.barrier && data.view==='2d') {
+    const path=data.paths.find(p=>p.id===data.barrier.path_id), p=path&&path.points.find(p=>p.entry_id===data.barrier.to_entry);
+    if(p && path.visible) {
+      const [ax,ay]=data.barrier.label_offset;
+      layout.annotations.push({x:p.x,y:p.value,ax,ay,text:esc(data.barrier_label)+' = '+num(data.barrier.value)+' '+esc(data.unit_label),
+        showarrow:true,arrowhead:2,arrowwidth:1.2,arrowcolor:style.focus||'#F4A06A',font:{color:fg},bgcolor:style.label_background||bg,
+        bordercolor:style.focus||'#F4A06A',borderwidth:1,borderpad:4});
+      annotations.push({barrier:true,ax,ay});
+    }
+  }
+  if(data.view==='2d') layout.annotations.push({xref:'paper',yref:'paper',x:1,y:1.08,xanchor:'right',yanchor:'bottom',
+    text:esc(data.text.guide),showarrow:false,font:{color:zero,size:10},bgcolor:'rgba(0,0,0,0)'});
+  syncing=true;
+  await Plotly.react(plot,all,layout,{responsive:true,displaylogo:false,scrollZoom:true,typesetMath:false,
+    locale:data.language==='en'?'en':'zh-CN',
+    editable:false,edits:{annotationPosition:data.view==='2d'},modeBarButtonsToRemove:['toImage','sendDataToCloud','autoScale2d'],
+    modeBarButtonsToAdd:data.view==='2d'?['select2d','lasso2d']:[]});
+  shown=data;renderCount++;syncing=false;
+  // A camera event from the previous envelope can be rejected while Qt publishes a newer revision.
+  // Reconcile the retained live camera with this freshly rendered envelope so the gesture is not lost.
+  if(retainLiveCamera){
+    const current=plot._fullLayout?.scene?._scene?.getCamera();
+    if(current&&!sameCamera(current,data.viewport.camera||data.default_camera)){
+      shown.viewport={...shown.viewport,camera:current};localViewports['3d']=shown.viewport;
+      notify('view_state',{viewport:{camera:current}});
+    }
+  }
+  plot.querySelectorAll('.annotation-arrow').forEach(arrow=>arrow.style.pointerEvents='none');
+  document.getElementById('notice').textContent=[fallback,...(bridge?[]:data.warnings),
+    all.some(t=>t.customdata&&t.customdata.length&&t.visible===true)?'':data.text.empty].filter(Boolean).join(' · ');
+  document.body.style.background=bg;
+  document.body.style.color=fg;
+  for(const [key,value] of Object.entries({background:bg,foreground:fg,border:style.label_line||zero,
+      surface:style.label_background||bg,warning:style.warning||zero})) {
+    document.documentElement.style.setProperty('--plot-'+key,value);
+  }
+  if(!bound){ bind(); bound=true; }
+  const points=data.paths.flatMap(path=>path.points.filter(p=>p.valid).map(p=>({path_id:path.id,entry_id:p.entry_id,node_id:p.node_id,value:p.value})));
+  if(bridge) bridge.rendered(JSON.stringify({project_id:data.project_id,revision:data.revision,render_id:data.render_id,view:data.view,
+    points,plotly_version:Plotly.version,trace_count:all.length,svg_count:plot.querySelectorAll('svg.main-svg').length,canvas_count:plot.querySelectorAll('canvas').length,render_count:renderCount,listeners_bound:1}));
+}
+function bind() {
+  // Native camera controls can update the WebGL renderer before Plotly emits a relayout.
+  // Flush the settled renderer camera after a pointer/wheel gesture, using the same guarded view event.
+  const flushCamera=()=>{
+    if(!shown||shown.view!=='3d')return;
+    clearTimeout(cameraFlushTimer);
+    const context=shown.context;
+    const commit=()=>{
+      const scene=plot._fullLayout?.scene?._scene;
+      if(!scene||!shown||shown.view!=='3d'||shown.context!==context)return;
+      if(running||pending||resizePending){cameraFlushTimer=setTimeout(commit,50);return;}
+      const camera=scene.getCamera();
+      if(sameCamera(camera,shown.viewport.camera||shown.default_camera))return;
+      shown.viewport={...shown.viewport,camera};localViewports['3d']=shown.viewport;
+      notify('view_state',{viewport:{camera}});
+    };
+    cameraFlushTimer=setTimeout(commit,180);
+  };
+  plot.addEventListener('pointerup',flushCamera,true);
+  plot.addEventListener('wheel',flushCamera,{capture:true,passive:true});
+  plot.on('plotly_click',event=>{
+    const point=event.points.find(p=>p.customdata);if(!point)return;
+    const c=point.customdata;notify('select',{points:[{path_id:c[0],entry_id:c[1],node_id:c[2]}],additive:!!(event.event&&(event.event.ctrlKey||event.event.shiftKey))});
+  });
+  plot.on('plotly_selected',event=>{
+    if(event&&event.points)notify('select',{points:event.points.filter(p=>p.customdata).map(p=>({path_id:p.customdata[0],entry_id:p.customdata[1],node_id:p.customdata[2]})).slice(0,2),additive:false});
+  });
+  plot.on('plotly_legendclick',event=>{
+    const path=shown.paths.find(p=>p.id===plot.data[event.curveNumber].legendgroup);if(!path)return false;
+    const hidden=shown.paths.filter(p=>!p.visible).map(p=>p.id), set=new Set(hidden);
+    if(path.visible)set.add(path.id);else set.delete(path.id);
+    if(bridge) notify('view_state',{hidden_paths:[...set]});
+    else {path.visible=!path.visible;enqueue(shown);}
+    return false;
+  });
+  plot.on('plotly_legenddoubleclick',()=>false);
+  plot.on('plotly_relayout',change=>{
+    if(syncing||!shown)return;
+    const viewport={};
+    for(const axis of ['x','y']){
+      const key=axis+'axis';
+      if(change[key+'.range[0]']!==undefined&&change[key+'.range[1]']!==undefined)viewport[axis+'_range']=[change[key+'.range[0]'],change[key+'.range[1]']];
+      if(Array.isArray(change[key+'.range']))viewport[axis+'_range']=change[key+'.range'];
+      if(change[key+'.autorange'])viewport.reset=true;
+    }
+    if(change['scene.camera']&&!sameCamera(change['scene.camera'],shown.viewport.camera||shown.default_camera))viewport.camera=change['scene.camera'];
+    const offsets={};let barrierOffset;
+    annotations.forEach((a,i)=>{
+      let ax=change[`annotations[${i}].ax`],ay=change[`annotations[${i}].ay`];
+      if(ax===undefined&&ay===undefined)return;
+      if(a.barrier)barrierOffset=[ax===undefined?a.ax:ax,ay===undefined?a.ay:ay];
+      else offsets[a.entry_id]=[ax===undefined?a.ax:ax,ay===undefined?a.ay:ay];
+    });
+    if(Object.keys(viewport).length||Object.keys(offsets).length||barrierOffset){
+      const {reset,...values}=viewport;
+      shown.viewport={...(reset?{}:shown.viewport),...values};
+      localViewports[shown.view]=shown.viewport;
+      if(bridge)notify('view_state',{viewport,label_offsets:offsets,...(barrierOffset?{barrier_offset:barrierOffset}:{})});
+      else {
+        for(const path of shown.paths)for(const point of path.points)if(offsets[point.entry_id])point.label_offset=offsets[point.entry_id];
+        if(barrierOffset&&shown.barrier)shown.barrier.label_offset=barrierOffset;
+      }
+    }
+  });
+  plot.on('plotly_webglcontextlost',()=>{notify('webgl_fallback',{});enqueue({...shown,view:'2d'});});
+}
+async function enqueue(raw) {
+  if(raw!==undefined)pending=typeof raw==='string'?JSON.parse(raw):raw;
+  if(running)return;
+  running=true;
+  try {
+    while(pending||resizePending){
+      if(pending){const next=pending;pending=null;await render(next);}
+      else {
+        resizePending=false;
+        if(shown&&plot.clientWidth>0&&plot.clientHeight>0){
+          if(isCompact(shown)!==compact)await render(shown);
+          await Plotly.Plots.resize(plot);
+        }
+      }
+    }
+  }
+  catch(error){if(bridge)bridge.failed(String(error));else document.getElementById('notice').textContent=String(error);}
+  finally{running=false;}
+}
+window.grpr={render:enqueue,get shown(){return shown;},get renderCount(){return renderCount;},
+ get queueState(){return {running,pending:!!pending,resizePending,cameraFlushTimer};},
+ setCamera:camera=>Plotly.relayout(plot,{'scene.camera':camera}),
+ setDragmode:mode=>Plotly.relayout(plot,{'scene.dragmode':mode}),
+ pointPosition:(pathId,entryId)=>{
+  if(!shown||shown.view!=='2d')return null;
+  const path=shown.paths.find(p=>p.id===pathId),p=path&&path.points.find(p=>p.entry_id===entryId);
+  if(!p||!p.valid)return null;const r=plot.getBoundingClientRect(),f=plot._fullLayout;
+  return {x:r.left+f.xaxis._offset+f.xaxis.l2p(p.x),y:r.top+f.yaxis._offset+f.yaxis.l2p(p.value)};
+ },reset:()=>Plotly.relayout(plot,shown.view==='3d'?{'scene.camera':shown.default_camera}:{'xaxis.autorange':true,'yaxis.autorange':true})};
+if(window.GRPR_STANDALONE){
+ const payload=JSON.parse(document.getElementById('payload').textContent);enqueue(payload);
+ const toggle=document.getElementById('view-toggle'),reset=document.getElementById('reset');
+ if(toggle)toggle.onclick=()=>{localViewports[shown.view]=shown.viewport;const view=shown.view==='2d'?'3d':'2d';enqueue({...shown,view,viewport:localViewports[view]||{}});};
+ if(reset)reset.onclick=()=>window.grpr.reset();
+}else{
+ new QWebChannel(qt.webChannelTransport,channel=>{
+   bridge=channel.objects.bridge;bridge.dataChanged.connect(enqueue);
+   bridge.resetRequested.connect(()=>window.grpr.reset());
+   bridge.imageRequested.connect(async request=>{
+     try{const q=JSON.parse(request);if(!shown||q.render_id!==shown.render_id)return;
+       const snapshot=shown,uri=await Plotly.toImage(plot,{format:'png',width:1600,height:1000,scale:1});
+       if(shown===snapshot)bridge.imageReady(JSON.stringify({request_id:q.request_id,project_id:snapshot.project_id,revision:snapshot.revision,render_id:snapshot.render_id,uri}));
+     }catch(e){bridge.failed(String(e));}
+   });
+   bridge.pageReady(2,Plotly.version);
+ });
+}
+// Reparenting into the expanded Qt dialog need not emit a browser window resize.
+// Serialize plot resizes with react(), coalescing bursts into one animation frame.
+new ResizeObserver(()=>{
+  if(!shown||resizeFrame)return;
+  resizeFrame=requestAnimationFrame(()=>{resizeFrame=0;resizePending=true;enqueue();});
+}).observe(plot);
+})();

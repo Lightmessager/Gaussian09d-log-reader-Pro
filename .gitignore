@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+build/
+dist/
+artifacts/
+*.egg-info/
+
+# Real Gaussian outputs can contain software-license and confidential notices.
+# They are local-only fixtures; synthetic parser fixtures remain in the repo.
+tests/fixtures/reference/*.out

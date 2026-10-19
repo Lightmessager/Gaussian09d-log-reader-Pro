@@ -210,6 +210,6 @@ def test_real_gaussian_sp_and_frequency_composite_reproduces_printed_gibbs():
     low_g = EnergyRef(low.id, low.jobs[0].id, KindPolicy.FIXED, EnergyKind.GIBBS_TOTAL)
     low_e = replace(low_g, kind=EnergyKind.SCF)
     result = evaluate_expression(composite_gibbs_expression(high_e, low_g, low_e), context((high, low)))
-    assert result.valid and result.value_hartree == pytest.approx(-382.164915, abs=1e-12)
+    assert result.valid and result.value_hartree == pytest.approx(-382.164914602, abs=1e-12)
     assert {(d.source_file_id, d.source_line) for d in result.dependencies} == {
-        (high.id, 3857), (low.id, 457), (low.id, 2061)}
+        (high.id, 3857), (low.id, 457), (low.id, 2057)}

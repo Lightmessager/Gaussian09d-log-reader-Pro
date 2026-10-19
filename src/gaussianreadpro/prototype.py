@@ -96,12 +96,12 @@ class PrototypeWindow(QMainWindow):
                        "platform": platform.platform(), "python": platform.python_version(),
                        "pyside6": PySide6.__version__, "synthetic_data": True,
                        "checks": {}, "errors": []}
-        self.setWindowTitle("GaussianReadPro · S0 offline feasibility")
+        self.setWindowTitle("GaussianReaderPro · S0 offline feasibility")
         self.resize(1080, 740)
         container = QWidget()
         container.setStyleSheet("QWidget { background:#f7f9fc; }")
         layout = QVBoxLayout(container)
-        title = QLabel("GaussianReadPro  ·  Offline Qt + Plotly prototype")
+        title = QLabel("GaussianReaderPro  ·  Offline Qt + Plotly prototype")
         title.setStyleSheet("font-size:20px;font-weight:600;color:#27334a;padding:12px;")
         layout.addWidget(title)
         self.view = QWebEngineView()
@@ -244,7 +244,7 @@ def main() -> int:
     parser.add_argument("--screenshot", type=Path)
     args = parser.parse_args()
     app = QApplication([sys.argv[0]])
-    app.setApplicationName("GaussianReadPro-S0")
+    app.setApplicationName("GaussianReaderPro-S0")
     window = PrototypeWindow(args)
     window.show()
     result = app.exec()

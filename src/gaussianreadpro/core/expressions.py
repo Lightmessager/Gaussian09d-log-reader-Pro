@@ -498,10 +498,23 @@ def evaluate_expression(expression, context):
                 diagnostics.append(Diagnostic("scf_not_converged", Severity.ERROR, {"job_id": ref.job_id}))
         energy = selected.energy
         if energy is not None:
-            key = (source.id, energy.job_id, kind)
-            dependencies[key] = EnergyDependency(source.id, energy.job_id, kind, energy.source_line,
-                                                  energy.value_hartree, source.display_name, source.sha256,
-                                                  selected.job.metadata)
+            evidence = ((selected.job.energies.get(EnergyKind.SCF),
+                         selected.job.energies.get(EnergyKind.GIBBS_CORRECTION))
+                        if kind == EnergyKind.GIBBS_TOTAL and selected.job else (energy,))
+            for item in evidence:
+                if item is None:
+                    continue
+                key = (source.id, item.job_id, item.kind)
+                dependencies[key] = EnergyDependency(source.id, item.job_id, item.kind, item.source_line,
+                                                      item.value_hartree, source.display_name, source.sha256,
+                                                      selected.job.metadata)
+            if kind == EnergyKind.GIBBS_TOTAL and selected.job:
+                reported = selected.job.energies.get(EnergyKind.GIBBS_TOTAL)
+                if reported is not None and abs(reported.value_hartree - energy.value_hartree) > 1e-6:
+                    diagnostics.append(Diagnostic("gaussian_gibbs_total_mismatch", Severity.ERROR,
+                        {"job_id": selected.job.id, "computed_hartree": energy.value_hartree,
+                         "reported_hartree": reported.value_hartree, "difference_hartree":
+                         reported.value_hartree - energy.value_hartree, "reported_source_line": reported.source_line}))
         cache[ref] = energy.value_hartree if energy else None
         return cache[ref]
     try:

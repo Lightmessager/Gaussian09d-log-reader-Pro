@@ -385,11 +385,12 @@ def select_job(source: SourceFile, kind: EnergyKind | str,
         if job is None:
             return JobSelection(None, None, (Diagnostic("job_not_found", params={"job_id": identifier}),))
         diagnostics = list(job.diagnostics)
-        energy = job.energies.get(kind)
+        energy = _job_energy(job, kind)
         if energy is None:
             diagnostics.append(Diagnostic("missing_energy", params={"kind": kind.value, "job_id": identifier}))
         return JobSelection(job, energy, tuple(diagnostics))
-    candidates = [job for job in source.jobs if job.termination == Termination.NORMAL and kind in job.energies]
+    candidates = [job for job in source.jobs if job.termination == Termination.NORMAL
+                  and _job_energy(job, kind) is not None]
     if not candidates:
         return JobSelection(None, None, (Diagnostic("no_normal_job_with_energy", params={"kind": kind.value}),))
     job = candidates[-1]
@@ -397,4 +398,20 @@ def select_job(source: SourceFile, kind: EnergyKind | str,
     later = [j for j in source.jobs[job.ordinal + 1:] if j.termination != Termination.NORMAL]
     if later:
         diagnostics.append(Diagnostic("later_job_not_normal", params={"job_ids": [j.id for j in later]}))
-    return JobSelection(job, job.energies[kind], tuple(diagnostics))
+    return JobSelection(job, _job_energy(job, kind), tuple(diagnostics))
+
+
+def _job_energy(job: JobRecord, kind: EnergyKind) -> EnergyValue | None:
+    """Resolve Gaussian Gibbs total from the same job's SCF plus Gibbs correction.
+
+    The printed Gaussian total remains available on JobRecord as independent
+    cross-check evidence, but never supplies the value used by calculations.
+    """
+    if kind != EnergyKind.GIBBS_TOTAL:
+        return job.energies.get(kind)
+    scf = job.energies.get(EnergyKind.SCF)
+    correction = job.energies.get(EnergyKind.GIBBS_CORRECTION)
+    if scf is None or correction is None:
+        return None
+    return EnergyValue(EnergyKind.GIBBS_TOTAL, scf.value_hartree + correction.value_hartree,
+                       f"{scf.raw_text} + {correction.raw_text}", scf.source_line, job.id)

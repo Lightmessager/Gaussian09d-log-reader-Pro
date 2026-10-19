@@ -29,7 +29,9 @@ def test_plot_spec_keeps_core_values_identity_order_and_sources(tmp_path):
     project, spec, payload = example(tmp_path)
     assert [p["value"] for p in payload["paths"][0]["points"]] == pytest.approx([0,15.0602273775,-5.0200757925,-15.6877368516])
     assert [p["entry_id"] for p in payload["paths"][0]["points"]] == [e.id for e in project.paths[0].entries]
-    assert payload["paths"][0]["points"][1]["dependencies"][0]["source_line"] == 4
+    dependencies = payload["paths"][0]["points"][1]["dependencies"]
+    assert {(item["kind"], item["source_line"]) for item in dependencies} == {
+        ("scf", 3), ("gibbs_correction", 4)}
     assert payload["sources"][0][3] == project.source_files[0].sha256
     assert payload["barrier"] is None
 
@@ -112,7 +114,7 @@ def test_chart_visual_style_tracks_glass_theme_and_keeps_paper_export_neutral():
     assert light["foreground"] != dark["foreground"]
     assert light["paper_background"] == dark["paper_background"] == "#FFFFFF"
     assert light["paper_selection"] == light["focus"] != light["paper_background"]
-    assert light["focus"] == "#F4A06A" and dark["focus"] == "#EEA06F"
+    assert light["focus"] == "#C46428" and dark["focus"] == "#FF9B61"
 
 
 def test_barrier_requires_explicit_ts_and_predecessor_and_mark(tmp_path):
@@ -149,6 +151,49 @@ def test_view_state_allowlist_rejects_nonfinite_and_scientific_edits(tmp_path):
     assert "energy" not in state and "revision" not in state
     assert state["label_offsets"] == {entry:[20,-40]}
     assert state["viewports"]["a"] == {"camera":{"eye":{"x":1.5,"y":1.5,"z":1.2}}}
+
+
+def test_three_viewport_version_allowlist_and_sqlite_roundtrip(tmp_path):
+    project, spec, payload = example(tmp_path)
+    camera = {"version": 1, "projection": "orthographic", "position": [6, -12, 8], "target": [0, 0, 0], "up": [0, 0, 1], "zoom": 1.4, "evil": "ignored"}
+    key = payload["context"] + "/3d"
+    state = clean_view_state({"mode": "3d", "viewports": {key: {"three_v1": camera}}}, spec)
+    assert "evil" not in state["viewports"][key]["three_v1"]
+    file = tmp_path / "three.grproj"
+    with ProjectRepository(file, create=True) as repo:
+        repo.save(replace(project, plot_state=state))
+    with ProjectRepository(file, read_only=True) as repo:
+        restored = repo.load()
+    assert plot_payload(spec, project.paths[0].id, state=restored.plot_state)["viewport"] == state["viewports"][key]
+    for mutation in ({"version": True}, {"version": 2}, {"projection": "perspective"}, {"zoom": float("nan")}, {"zoom": False}, {"zoom": 13}, {"position": [0, 0, 0]}, {"up": [6, -12, 8]}, {"target": [1001, 0, 0]}, {"up": [0, 0, 0]}):
+        cleaned = clean_view_state({"viewports": {key: {"three_v1": {**camera, **mutation}}}}, spec)
+        assert cleaned["viewports"][key] == {}, mutation
+    assert payload["renderer_capabilities"] == ["three_v1", "plotly-v1"]
+    assert payload["jobs"][0][2] == 1
+
+
+def test_three_camera_roundtrip_does_not_schedule_endless_workspace_writes(workbench):
+    from gaussianreadpro.core.models import Project, new_id
+    window, controller = workbench
+    camera = {"version": 1, "projection": "orthographic", "position": [6, -12, 8], "target": [0, 0, 0], "up": [0, 0, 1], "zoom": 1}
+    controller.project = Project(new_id(), plot_state={"viewports": {"test/3d": {"three_v1": camera}}})
+    controller.plot_state = dict(controller.project.plot_state)
+    controller._plot_dirty = False
+    controller._workspace_timer.stop()
+    controller.set_plot_state(viewports={"test/3d": {"three_v1": camera}})
+    assert not controller._plot_dirty and not controller._workspace_timer.isActive()
+    class ScriptPage:
+        def runJavaScript(self, code):
+            self.code = code
+    panel = window.profile
+    previous_page, previous_ready, previous_payload = panel.page, panel.ready, panel.last_payload
+    sink = ScriptPage()
+    try:
+        panel.page, panel.ready, panel.last_payload = sink, True, {"view": "3d", "context": "test"}
+        panel._camera_preset_changed(4)
+        assert sink.code.startswith("window.grpr.setViewport(") and '"three_v1"' in sink.code
+    finally:
+        panel.page, panel.ready, panel.last_payload = previous_page, previous_ready, previous_payload
 
 
 @pytest.mark.parametrize("format",["png","svg","pdf","html"])
@@ -269,6 +314,27 @@ def test_chart_events_are_guarded_and_plot_state_survives_save(app,workbench,tmp
         assert repository.load().plot_state==controller.project.plot_state
     assert "energy" not in controller.project.plot_state
     assert controller.project.plot_state["viewports"][payload["context"]+"/2d"]["x_range"]==(-.6,3.6)
+
+
+def test_chart_species_event_uses_exact_path_node_entry_and_rejects_stale(app, workbench, tmp_path):
+    window, controller = workbench
+    controller.import_files(write_logs(tmp_path / "logs")); settle(app, controller)
+    controller.reference_node(controller.project.nodes[0].id); settle(app, controller)
+    panel = window.profile
+    panel.speciesSelectionRequested.disconnect(window.chart_species_requested)
+    payload = panel.last_payload
+    point = payload["paths"][0]["points"][0]
+    captured = []
+    panel.speciesSelectionRequested.connect(lambda *parts: captured.append(parts))
+    event = {"type": "species_select", "project_id": controller.project.id,
+             "revision": controller.project.revision, "render_id": payload["render_id"],
+             "path_id": payload["paths"][0]["id"], "entry_id": point["entry_id"],
+             "node_id": point["node_id"]}
+    panel.handle_event(json.dumps({**event, "revision": -1}))
+    panel.handle_event(json.dumps({**event, "node_id": controller.project.nodes[1].id}))
+    assert not captured
+    panel.handle_event(json.dumps(event))
+    assert captured == [(event["path_id"], event["node_id"], event["entry_id"])]
 
 
 def test_chart_path_visibility_menu_is_bilingual_and_view_only(app, workbench, tmp_path):

@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 from ..storage import StorageError
+from .. import APP_NAME, __version__
 
 RESOURCES = Path(__file__).resolve().parents[1] / "resources" / "plot"
 
@@ -22,7 +23,7 @@ def assert_current_payload(payload, spec):
     if payload["project_id"] != spec.project_id or payload["revision"] != spec.revision:
         raise StorageError("stale_plot_export")
     paths = {p.id: p for p in spec.paths}
-    for path in payload["paths"]:
+    for path in [*payload["paths"], *payload.get("offline_paths", [])]:
         current = paths.get(path["id"])
         if current is None or current.reference_signature != path["reference_signature"]:
             raise StorageError("plot_sources_changed")
@@ -44,7 +45,9 @@ def _tables(payload, folder):
                ["路径", "路径ID", "条目ID", "节点ID", "步骤", "标签", "有效", "当前数值", "单位", "体系能量/Eh", "参考能量/Eh", "能量差/Eh", "表达式", "参考表达式", "诊断"])
     rows, provenance = [], []
     source_paths = {s[0]: s[2] for s in payload["sources"]}
-    for path in payload["paths"]:
+    # Audit every path the offline controls can reveal, including paths which
+    # were outside the current single-path display at export time.
+    for path in payload.get("offline_paths", payload["paths"]):
         for point in path["points"]:
             rows.append([_safe_cell(path["label"]), path["id"], point["entry_id"], point["node_id"], point["x"] + 1,
                 _safe_cell(point["label"]), point["valid"], point["value"] if point["valid"] else "", payload["unit_label"],
@@ -94,6 +97,8 @@ def draw_2d(payload, destination):
         result_path = Path(str(request) + ".result.json")
         if process.returncode or not result_path.is_file():
             detail = process.stderr.decode("utf-8", errors="replace")[-2000:]
+            if result_path.is_file():
+                detail = json.loads(result_path.read_text(encoding="utf-8")).get("error", detail)
             raise StorageError("static_plot_export_failed", f"exit_code={process.returncode}; {detail}")
         return json.loads(result_path.read_text(encoding="utf-8"))
     except subprocess.TimeoutExpired as error:
@@ -184,7 +189,7 @@ def _draw_2d_in_process(payload, destination):
                 ax.annotate(f"{payload['barrier_label']} = {marker['value']:+.6g} {payload['unit_label']}", (point["x"], point["value"]),
                             xytext=(dx*.75, -dy*.75), textcoords="offset points", arrowprops={"arrowstyle": "->"}, fontsize=9)
         fig.subplots_adjust(left=.12, right=.96, top=.85, bottom=.24)
-        fig.savefig(destination, facecolor="white", metadata={"Creator": "GaussianReadPro"} if destination.suffix in (".svg", ".pdf") else None)
+        fig.savefig(destination, facecolor="white", metadata={"Creator": APP_NAME + " " + __version__} if destination.suffix in (".svg", ".pdf") else None)
     return {"matplotlib": matplotlib.__version__, "cjk_font": cjk, "paper_background": "white",
             "python": sys.version.split()[0], "python_isolated": bool(sys.flags.isolated),
             "backend": matplotlib.get_backend(), "render_seconds": perf_counter()-started}
@@ -195,19 +200,39 @@ def _write_html(payload, folder, tables):
     assets.mkdir()
     shutil.copyfile(RESOURCES / "vendor" / "plotly.min.js", assets / "plotly.min.js")
     shutil.copyfile(RESOURCES / "profile.js", assets / "profile.js")
-    (assets / "standalone.js").write_text("window.GRPR_STANDALONE=true;\n", encoding="utf-8")
+    # data: modules share one Three URL and work directly from file:// without
+    # fetching ES modules across opaque file origins or requiring a local server.
+    def module_url(source):
+        return "data:text/javascript;base64," + base64.b64encode(source.encode("utf-8")).decode("ascii")
+    three_url = module_url((RESOURCES / "vendor/three.module.min.js").read_text(encoding="utf-8"))
+    urls = {}
+    for key, filename in (("scene", "scene3d.js"), ("molecule", "molecule_view.js")):
+        source = (RESOURCES / filename).read_text(encoding="utf-8")
+        source = source.replace("'./vendor/three.module.min.js'", json.dumps(three_url))
+        urls[key] = module_url(source)
+    modules = "window.GRPR_MODULES={" + ",".join(key + ":import(" + json.dumps(url) + ")" for key, url in urls.items()) + "};\n"
+    (assets / "standalone.js").write_text("window.GRPR_STANDALONE=true;\n" + modules, encoding="utf-8")
+    for filename in ("replica.css", "replica_controls.js", "inspector_view.js", "scene3d.js", "molecule_view.js"):
+        shutil.copyfile(RESOURCES / filename, assets / filename)
+    for filename in ("three.module.min.js", "THREE-LICENSE.txt", "three-manifest.json", "manifest.json"):
+        target = assets / "vendor"
+        target.mkdir(exist_ok=True)
+        shutil.copyfile(RESOURCES / "vendor" / filename, target / filename)
     raw = json.dumps(payload, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     def table(headers, rows):
         return "<table><thead><tr>" + "".join("<th>"+html.escape(str(v))+"</th>" for v in headers) + "</tr></thead><tbody>" + "".join(
             "<tr>" + "".join("<td>"+html.escape(str(v) if v is not None else "—")+"</td>" for v in row) + "</tr>" for row in rows) + "</tbody></table>"
     caption = "Data and provenance" if payload["language"] == "en" else "数据与来源"
-    document = '''<!doctype html><html><head><meta charset="utf-8"><title>GaussianReadPro</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; connect-src 'none'">
-<style>body{margin:0;background:var(--plot-background,#FCFAFF);color:var(--plot-foreground,#292137);font:14px 'Segoe UI','Microsoft YaHei',sans-serif}header{padding:12px;background:var(--plot-surface,#FFFFFF)}button{padding:8px;margin-right:8px;background:var(--plot-surface,#FFFFFF);color:inherit;border:1px solid var(--plot-border,#D8CBE5);border-radius:8px}button:focus-visible{outline:2px solid currentColor;outline-offset:2px}#plot{height:80vh;min-height:400px}#notice{padding:4px 20px;color:var(--plot-warning,#875017)}details{padding:18px;overflow:auto}td,th{border-bottom:1px solid var(--plot-border,#D8CBE5);padding:7px;white-space:pre-wrap;max-width:500px}table{border-collapse:collapse}</style>
-<script src="assets/standalone.js"></script><script src="assets/plotly.min.js"></script><script src="assets/profile.js" defer></script></head><body>
-<header><b>GaussianReadPro</b> <button id="view-toggle">2D / 3D</button><button id="reset">Reset / 重置</button></header><div id="notice"></div><div id="plot"></div>'''
-    document += '<script id="payload" type="application/json">' + raw + "</script>"
-    document += "<details><summary>" + caption + "</summary>" + table(tables[0], tables[1]) + table(tables[2], tables[3]) + "</details></body></html>"
+    document = (RESOURCES / "profile.html").read_text(encoding="utf-8")
+    document = document.replace("script-src 'self' qrc: 'unsafe-eval'", "script-src 'self' data: 'unsafe-eval'")
+    document = document.replace('<script src="qrc:///qtwebchannel/qwebchannel.js"></script>', '<script src="assets/standalone.js"></script>')
+    for filename in ("replica.css", "inspector_view.js", "replica_controls.js", "profile.js"):
+        document = document.replace('"' + filename + '"', '"assets/' + filename + '"')
+    document = document.replace('"vendor/plotly.min.js"', '"assets/plotly.min.js"')
+    document = document.replace('</head>', '<style>#offline-audit{position:fixed;bottom:4px;right:4px;z-index:100;max-height:70vh;max-width:95vw;overflow:auto;background:var(--profile-canvas,#FCFAFF);color:var(--profile-text,#292137);padding:8px}#offline-audit td,#offline-audit th{padding:6px;border:1px solid #777;white-space:pre-wrap}body:not(.workbench) #workbench{display:block}body:not(.workbench) #plot{height:75vh}body:not(.workbench) #inspector-shell{display:none}</style></head>')
+    audit = '<script id="payload" type="application/json">' + raw + '</script><details id="offline-audit"><summary>' + caption + '</summary>'
+    audit += table(tables[0], tables[1]) + table(tables[2], tables[3]) + '</details>'
+    document = document.replace('</body>', audit + '</body>')
     (folder / "profile.html").write_text(document, encoding="utf-8")
 
 
@@ -230,23 +255,28 @@ def export_plot_bundle(payload, destination, format, *, raster=None):
         info = {}
         if format == "html":
             _write_html(payload, staging, tables)
-        elif payload["view"] == "3d":
+        elif payload["view"] == "3d" or payload.get("export_scope") == "workbench":
             if not raster or len(raster) > 32*1024*1024:
                 raise StorageError("three_dimensional_capture_required")
             from PIL import Image
             with Image.open(io.BytesIO(raster)) as im:
-                if im.format != "PNG" or im.size != (1600, 1000):
+                size = im.size
+                workbench = payload.get("export_scope") == "workbench"
+                if im.format != "PNG" or (not workbench and size != (1600, 1000)) or not (0 < size[0] <= 16000 and 0 < size[1] <= 16000 and size[0]*size[1] <= 40_000_000):
                     raise StorageError("invalid_plot_raster")
                 im.verify()
             (staging / "profile.png").write_bytes(raster)
-            info = {"raster_source": "Plotly.toImage", "size": [1600, 1000]}
+            info = {"raster_source": "QtWebEngine QWidget.grab" if workbench else "Three.js ProfileRenderer.capture", "size": list(size), "export_scope": "workbench" if workbench else "chart"}
         else:
             info = draw_2d(payload, staging / ("profile." + format))
         files = {path.relative_to(staging).as_posix(): {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "bytes": path.stat().st_size}
                  for path in staging.rglob("*") if path.is_file()}
         manifest = {"format_version": 1, "primary": "profile."+format, "project_id": payload["project_id"],
+                    "application": APP_NAME, "application_version": __version__,
                     "revision": payload["revision"], "view": payload["view"], "unit": payload["unit"],
                     "csv_encoding": "utf-8-sig", "csv_delimiter": ",", "text_formula_escape": "apostrophe; exact original in plot.json",
+                    "renderer": "Three.js r170" if payload["view"] == "3d" else "Plotly / Matplotlib",
+                    "structure_policy": "verified selected coordinates embedded; other nodes explicitly unavailable",
                     "files": files, **info}
         (staging / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         destination.mkdir(exist_ok=False)

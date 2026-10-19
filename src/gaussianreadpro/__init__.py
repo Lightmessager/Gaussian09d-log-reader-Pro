@@ -1,3 +1,5 @@
-"""GaussianReadPro: independent data core and offline desktop feasibility prototype."""
+"""GaussianReaderPro: offline Gaussian analysis and energy profiles."""
 
-__version__ = "0.0.1"
+APP_NAME = "GaussianReaderPro"
+__version__ = "2.0.0"
+VERSION_LABEL = "2.0.0"

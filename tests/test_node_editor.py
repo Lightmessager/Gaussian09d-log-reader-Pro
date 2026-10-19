@@ -22,6 +22,7 @@ def import_six(app, controller, tmp_path):
         path = tmp_path / (name + ".log")
         path.write_text("SYNTHETIC S6 DEMO\nEntering Gaussian System\n"
                         f" SCF Done: E(RB3LYP) = {energy - .03:.12f} A.U.\n"
+                        " Thermal correction to Gibbs Free Energy= 0.030000000000\n"
                         f" Sum of electronic and thermal Free Energies= {energy:.12f}\n"
                         " Normal termination of Gaussian 16\n", encoding="utf-8")
         paths.append(path)
@@ -109,6 +110,40 @@ def test_invalid_expert_draft_is_autosaved_and_restored(app, workbench, tmp_path
     editor = ExpressionDialog(controller, node_id=node_id, parent=window)
     assert editor.text.toPlainText() == document.draft_text
     editor.deleteLater()
+
+
+def test_explicit_expression_save_survives_fresh_controller_restart(app, workbench, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+    from gaussianreadpro.services.controller import ProjectController
+    window, controller = workbench
+    ids = import_six(app, controller, tmp_path)
+    node_id = ids["TS1"]
+    destination = tmp_path / "explicit.grproj"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(destination), ""))
+    editor = ExpressionDialog(controller, node_id=node_id, parent=window)
+    editor.show()
+    editor.tabs.setCurrentIndex(1)
+    editor.text.setPlainText("@{TS1} + 0.25[kcal/mol]")
+    QTest.mouseClick(editor.save_button, Qt.MouseButton.LeftButton)
+    deadline = monotonic() + 10
+    while editor._save_requested or controller.busy:
+        app.processEvents()
+        QTest.qWait(5)
+        assert monotonic() < deadline
+    assert controller.path == destination.resolve()
+    assert str(destination) in editor.save_status.text()
+    assert destination.exists()
+    expected_expression = next(node for node in controller.project.nodes if node.id == node_id).expression
+    editor.close()
+    settle(app, controller)
+
+    restarted = ProjectController(tmp_path / "restarted-recovery", tmp_path / "restarted-prefs.ini")
+    restarted.open_project(destination)
+    settle(app, restarted)
+    restored = next(node for node in restarted.project.nodes if node.id == node_id)
+    assert restored.expression == expected_expression
+    restarted.close()
+    settle(app, restarted)
 
 
 def test_history_monotonic_revision_shared_path_and_import_barrier(app, workbench, tmp_path):

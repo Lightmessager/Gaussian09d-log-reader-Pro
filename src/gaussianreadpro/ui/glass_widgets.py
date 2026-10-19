@@ -1,4 +1,6 @@
 """Small QPainter glass primitives; no widget-tree capture or graphics effects."""
+import re
+
 from PySide6.QtCore import Qt, QRectF, QEvent, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QApplication, QFrame, QWidget, QPushButton
@@ -104,6 +106,7 @@ class GlassBackdrop(QWidget):
         self._theme = theme
         self._reduced = bool(reduced)
         self._cache = None
+        self._energy_profile = False
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setObjectName("glassBackdrop")
 
@@ -116,6 +119,13 @@ class GlassBackdrop(QWidget):
             raise ValueError("theme must be 'light' or 'dark'")
         if (theme, bool(reduced)) != (self._theme, self._reduced):
             self._theme, self._reduced, self._cache = theme, bool(reduced), None
+            self.update()
+
+    def set_energy_profile(self, enabled):
+        enabled = bool(enabled)
+        if enabled != self._energy_profile:
+            self._energy_profile = enabled
+            self._cache = None
             self.update()
 
     def resizeEvent(self, event):
@@ -131,19 +141,20 @@ class GlassBackdrop(QWidget):
                                       max(1, round(self.height() * ratio)))
         image.setDevicePixelRatio(ratio)
         colors, glow = palette["colors"], palette["colors"]["glow"]
+        canvas = palette["profile"]["canvas"] if self._energy_profile else colors["canvas"]
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(QRectF(0, 0, self.width(), self.height()), QColor(colors["canvas"]))
-        if not self._reduced:
+        painter.fillRect(QRectF(0, 0, self.width(), self.height()), QColor(canvas))
+        if not self._reduced and not self._energy_profile:
             first = QRadialGradient(QRectF(0, 0, self.width() * .86, self.height() * .86).center(), max(self.width(), self.height()) * .66)
-            inner = QColor(glow[0]); inner.setAlpha(96)
+            inner = QColor(glow[0]); inner.setAlpha(34)
             outer = QColor(glow[0]); outer.setAlpha(0)
             first.setColorAt(0, inner)
             first.setColorAt(1, outer)
             painter.fillRect(QRectF(0, 0, self.width(), self.height()), first)
             second = QRadialGradient(QRectF(self.width() * .24, self.height() * .20,
                                              self.width() * 1.12, self.height() * 1.12).center(), max(self.width(), self.height()) * .72)
-            inner = QColor(glow[1]); inner.setAlpha(66)
+            inner = QColor(glow[1]); inner.setAlpha(24)
             outer = QColor(glow[1]); outer.setAlpha(0)
             second.setColorAt(0, inner)
             second.setColorAt(1, outer)
@@ -194,25 +205,40 @@ class GlassPanel(QFrame):
         super().paintEvent(event)
         tokens = get_palette(self._theme)
         colors, metrics = tokens["colors"], tokens["metrics"]
+        profile = tokens["profile"]
+        chrome = self.property("profileChrome")
         bounds = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        radius = {"toolbar": metrics["radius_toolbar"], "surface": metrics["radius_card"],
+        radius = 0 if chrome in ("header", "sidebar", "transparent") else 14 if chrome == "panel" else {"toolbar": metrics["radius_toolbar"], "surface": metrics["radius_card"],
                   "elevated": metrics["radius_card"]}[self._variant]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         shape = QPainterPath()
         shape.addRoundedRect(bounds, radius, radius)
-        if self._variant == "elevated" and not self._reduced:
+        if self._variant == "elevated" and not self._reduced and chrome is None:
             for inset, alpha in ((5, 12), (3, 18)):
                 shadow = QPainterPath()
                 shadow.addRoundedRect(bounds.adjusted(0, inset, 0, inset), radius + inset, radius + inset)
                 painter.fillPath(shadow, QColor(53, 34, 67, alpha))
-        fill = QColor(colors["surface"] if self._variant != "toolbar" else colors["toolbar"])
-        opacity = metrics["glass_opacity" if self._variant != "toolbar" else "glass_toolbar_opacity"]
-        fill.setAlpha(255 if self._reduced else round(255 * opacity))
+        if chrome in ("header", "sidebar"):
+            fill = QColor(profile["header" if chrome == "header" else "sidebar"])
+        elif chrome == "transparent":
+            fill = QColor(0, 0, 0, 0)
+        elif chrome == "panel":
+            raw = profile["panel"]
+            match = re.fullmatch(r"rgba\((\d+),(\d+),(\d+),(0(?:\.\d+)?|1(?:\.0+)?)\)", raw)
+            fill = QColor(*(int(match.group(i)) for i in (1, 2, 3)), round(float(match.group(4)) * 255)) if match else QColor(raw)
+        else:
+            fill = QColor(colors["surface"] if self._variant != "toolbar" else colors["toolbar"])
+            opacity = metrics["glass_opacity" if self._variant != "toolbar" else "glass_toolbar_opacity"]
+            fill.setAlpha(255 if self._reduced else round(255 * opacity))
         painter.fillPath(shape, fill)
-        painter.setPen(QColor(colors["border"] if self._reduced or self.property("profileSurface") else colors["highlight"]))
-        painter.drawPath(shape)
-        if not self._reduced:
+        border_color = profile["border"] if chrome or self.property("profileSurface") else colors["border"]
+        match = re.fullmatch(r"rgba\((\d+),(\d+),(\d+),(0(?:\.\d+)?|1(?:\.0+)?)\)", border_color)
+        border = QColor(*(int(match.group(i)) for i in (1, 2, 3)), round(float(match.group(4)) * 255)) if match else QColor(border_color)
+        if chrome != "transparent":
+            painter.setPen(border)
+            painter.drawPath(shape)
+        if not self._reduced and chrome is None:
             stroke = QPainterPath()
             stroke.moveTo(bounds.left() + radius, bounds.top() + .75)
             stroke.lineTo(bounds.right() - radius, bounds.top() + .75)

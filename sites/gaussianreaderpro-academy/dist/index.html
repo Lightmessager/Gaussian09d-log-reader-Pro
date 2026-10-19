@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101823">
+  <meta name="description" content="在毛玻璃科学展厅中，亲手学习 GaussianReaderPro 2.0.0：从日志导入、反应路径到能量分析与导出。">
+  <title>GaussianReaderPro Academy · 让计算清晰可见</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%2315232e'/%3E%3Cpath d='M7 27C15 27 12 11 21 11S24 27 33 18' fill='none' stroke='%237ce9d0' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script src="model.js" defer></script><script src="curriculum.js" defer></script>
+  <script src="visuals.js" defer></script><script src="audio.js" defer></script><script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳到主要内容</a>
+  <div class="atmosphere" aria-hidden="true"><div class="aurora a1"></div><div class="aurora a2"></div><div class="aurora a3"></div><div class="grain"></div></div>
+  <canvas id="particles" aria-hidden="true"></canvas>
+  <div class="app-shell">
+    <aside class="sidebar glass" id="sidebar" aria-label="课程导航"></aside>
+    <div class="workspace">
+      <header class="topbar" id="topbar"></header>
+      <main id="main" tabindex="-1"></main>
+      <footer class="site-footer"><span><i class="status-dot"></i>基于 GaussianReaderPro 2.0.0</span><span>探索 · 理解 · 亲手实践 <span class="footer-spark">✦</span></span></footer>
+    </div>
+  </div>
+  <div id="toast" class="toast glass" role="status" aria-live="polite"></div>
+  <dialog id="preferences" class="preferences glass"></dialog>
+  <dialog id="search-dialog" class="search-dialog glass"></dialog>
+  <div id="mobile-scrim"></div>
+</body>
+</html>

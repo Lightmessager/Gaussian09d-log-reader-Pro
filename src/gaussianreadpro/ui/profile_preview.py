@@ -25,17 +25,30 @@ class ProfilePreview(QWidget):
         self.selected_id = None
         self.language = "zh_CN"
         self.dark = False
+        self.graph_edges = []
         self.setObjectName("profilePreview")
 
     def set_data(self, project, path, result, selected_id=None):
         self.path, self.result, self.selected_id = path, result, selected_id
         self.points = []
+        self.graph_edges = []
         if project and path and result:
             nodes = {node.id: node for node in project.nodes}
             values = {node.entry_id: node for node in result.nodes}
             for entry in path.entries:
                 value = values.get(entry.id)
                 self.points.append((entry.position, nodes[entry.node_id], value))
+            try:
+                from ..core.reaction_network import read_reaction_network
+                reaction = next((item for item in read_reaction_network(project)["path_reactions"]
+                                 if item["path_id"] == path.id and not item["historical"]), None)
+                if reaction:
+                    entries = {stage["id"]: stage["entry_id"] for stage in reaction["stages"]}
+                    self.graph_edges = [(entries[parent], entries[stage["id"]])
+                        for stage in reaction["stages"] for parent in stage["predecessor_stage_ids"]
+                        if parent in entries and entries[parent] and stage["entry_id"]]
+            except ValueError:
+                self.graph_edges = []
         self.update()
 
     def set_language(self, language):
@@ -89,8 +102,14 @@ class ProfilePreview(QWidget):
         def position(step, value):
             return QPointF(area.left() + (step + .5) / max(count, 1) * area.width(),
                            area.bottom() - (value-lo) / (hi-lo) * area.height())
-        curves = visual_curve_runs([(pos, value.display_value) if value and value.valid and value.display_value is not None
-                                    else None for pos, node, value in self.points])
+        if self.graph_edges:
+            entry_ids = {entry.node_id: entry.id for entry in self.path.entries}
+            curves = visual_curve_runs([(entry_ids[node.id], pos, value.display_value)
+                    if value and value.valid and value.display_value is not None else None
+                    for pos, node, value in self.points], edges=self.graph_edges)
+        else:
+            curves = visual_curve_runs([(pos, value.display_value) if value and value.valid and value.display_value is not None
+                                        else None for pos, node, value in self.points])
         for run in curves:
             curve = QPainterPath()
             curve.moveTo(position(*run[0]))

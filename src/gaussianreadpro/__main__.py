@@ -56,9 +56,23 @@ def _webengine_smoke(app, report_path):
     return app.exec()
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--validate-ux-v2-u8":
+        from .validation_ux_v2_u8 import main as validate
+        return validate(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "--validate-rf7":
+        from .validation_rf7 import main as validate
+        return validate(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "--render-static":
         from .services.static_plot_worker import main as render_static
-        return render_static(sys.argv[2:])
+        try:
+            return render_static(sys.argv[2:])
+        except Exception as error:
+            # Windowed PyInstaller otherwise opens a blocking exception dialog
+            # inside this disposable helper. Return structured diagnostics to UI.
+            if len(sys.argv) == 4:
+                Path(sys.argv[2] + ".result.json").write_text(
+                    json.dumps({"error": f"{type(error).__name__}: {error}"}), encoding="utf-8")
+            return 1
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
@@ -66,15 +80,19 @@ def main():
     from .storage.preferences import default_recovery_directory
     from .ui.main_window import MainWindow
     from .ui.theme import apply_theme
-    parser = argparse.ArgumentParser(description="GaussianReadPro research workbench")
+    from . import APP_NAME, VERSION_LABEL
+    parser = argparse.ArgumentParser(description=APP_NAME + " research workbench")
+    parser.add_argument("--version", action="version", version=APP_NAME + " " + VERSION_LABEL)
     parser.add_argument("project", nargs="?", type=Path)
     parser.add_argument("--preferences", type=Path, help="Use a separate preferences INI file")
     parser.add_argument("--recovery-directory", type=Path)
     parser.add_argument("--webengine-smoke-report", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     app = QApplication([sys.argv[0]])
-    app.setOrganizationName("GaussianReadPro")
-    app.setApplicationName("GaussianReadPro")
+    app.setOrganizationName(APP_NAME)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(VERSION_LABEL)
+    app.setApplicationDisplayName(APP_NAME + " " + VERSION_LABEL)
     icon_path = Path(__file__).resolve().parent / "resources" / "icons" / "app-icon.png"
     app.setWindowIcon(QIcon(str(icon_path)))
     apply_theme(app)

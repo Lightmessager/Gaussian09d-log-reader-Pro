@@ -15,6 +15,7 @@ class LocalPreferences:
         from PySide6.QtCore import QSettings
         self._qt = QSettings
         self.settings = (QSettings(str(Path(path).resolve()), QSettings.Format.IniFormat) if path
+                         # Keep the historical namespace when the display name changes.
                          else QSettings("GaussianReadPro", "GaussianReadPro"))
         self.settings.setAtomicSyncRequired(True)
 
@@ -55,9 +56,37 @@ class LocalPreferences:
         return values
 
     def remember_project(self, path):
-        path = str(Path(path).resolve())
-        recent = [path] + [p for p in self.load()["recent_projects"] if p != path]
+        path = self._normalized(path)
+        key = self._key(path)
+        recent = [path] + [p for p in self.load()["recent_projects"] if self._key(p) != key]
         return self.save(recent_projects=recent[:20])
+
+    @staticmethod
+    def _normalized(path):
+        return str(Path(path).resolve())
+
+    @staticmethod
+    def _key(path):
+        import os
+        return os.path.normcase(str(Path(path).resolve()))
+
+    def remove_recent_project(self, path):
+        key = self._key(path)
+        return self.save(recent_projects=[p for p in self.load()["recent_projects"] if self._key(p) != key])
+
+    def replace_recent_project(self, old_path, new_path):
+        old_key, new = self._key(old_path), self._normalized(new_path)
+        new_key = self._key(new)
+        recent = [new if self._key(p) == old_key else p for p in self.load()["recent_projects"]]
+        result, seen = [], set()
+        for path in recent:
+            key = self._key(path)
+            if key not in seen:
+                result.append(path)
+                seen.add(key)
+        if new_key not in seen:
+            result.insert(0, new)
+        return self.save(recent_projects=result[:20])
 
     @property
     def last_project(self):
@@ -67,4 +96,8 @@ class LocalPreferences:
 
 def default_recovery_directory():
     from PySide6.QtCore import QStandardPaths
-    return Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)) / "recovery"
+    from .. import APP_NAME
+    location = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation))
+    # Preserve the platform's existing folder layout, including macOS's single
+    # app-name component, without losing pre-0.2.0 unnamed-project recoveries.
+    return Path(*( "GaussianReadPro" if part == APP_NAME else part for part in location.parts)) / "recovery"

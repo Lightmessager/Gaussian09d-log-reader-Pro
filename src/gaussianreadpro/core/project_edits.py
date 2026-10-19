@@ -168,4 +168,7 @@ def remove_sources(project, source_ids, *, cascade=False):
                     nodes=tuple(n for n in project.nodes if n.id not in removed_nodes), paths=tuple(paths),
                     alias_bindings={name: ref for name, ref in project.alias_bindings.items()
                                     if ref.source_file_id not in selected})
+    if "reaction_network_v1" in after.workspace_state:
+        from .reaction_network import reconcile_network, write_reaction_network
+        after = write_reaction_network(after, reconcile_network(after))
     return _change(project, after, usage.node_ids, affected, usage.node_ids, usage.reference_path_ids)

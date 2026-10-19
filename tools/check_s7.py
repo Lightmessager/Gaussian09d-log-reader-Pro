@@ -15,6 +15,7 @@ from gaussianreadpro.services.controller import ProjectController
 from gaussianreadpro.ui.main_window import MainWindow
 from gaussianreadpro.ui.theme import apply_theme
 from gaussianreadpro.storage import ProjectRepository
+from gaussianreadpro.validation_rf7 import memory_snapshot
 
 
 def wait(test, description, timeout=30):
@@ -52,7 +53,7 @@ def main():
     apply_theme(app)
     controller = ProjectController(run / "recovery", run / "preferences.ini")
     window = MainWindow(controller)
-    errors, checks = [], {}
+    errors, checks, performance = [], {}, {}
     controller.failed.connect(lambda code, detail: errors.append({"code": code, "detail": detail}))
     extra_view = None
     try:
@@ -65,6 +66,7 @@ def main():
             file = run / (name + ".log")
             file.write_text("SYNTHETIC S7 VALIDATION\nEntering Gaussian System\n"
                             f" SCF Done: E(RB3LYP) = {value-.03:.12f} A.U.\n"
+                            " Thermal correction to Gibbs Free Energy= 0.030000000000\n"
                             f" Sum of electronic and thermal Free Energies= {value:.12f}\n Normal termination of Gaussian 16\n", encoding="utf-8")
             paths.append(file)
         window.import_paths(paths); settle(controller)
@@ -101,26 +103,30 @@ def main():
         checks["explicit_local_barrier"] = True
         panel.reset_options({"barrier":None})
         settle(controller); rendered(panel)
-        js(panel.page, "Plotly.relayout(document.getElementById('plot'), {'xaxis.range':[-0.7,3.7], 'yaxis.range':[-22,23]}); true")
+        # Plotly.react can still be settling after the Qt payload handshake.
+        QTest.qWait(250)
+        js(panel.page, "Plotly.relayout(document.querySelector('#plot .plotly-host'), {'xaxis.range':[-0.7,3.7], 'yaxis.range':[-22,23]}); true")
         wait(lambda: bool(controller.plot_state.get("viewports")), "viewport event")
         settle(controller); rendered(panel)
         context = panel.last_payload["context"] + "/2d"
         assert list(controller.project.plot_state["viewports"][context]["x_range"]) == [-.7,3.7]
-        js(panel.page, "Plotly.relayout(document.getElementById('plot'), {'annotations[0].ax':22, 'annotations[0].ay':-48}); true")
+        js(panel.page, "Plotly.relayout(document.querySelector('#plot .plotly-host'), {'annotations[0].ax':22, 'annotations[0].ay':-48}); true")
         settle(controller); rendered(panel)
         assert controller.plot_state.get("label_offsets")
         assert [p["value"] for p in panel.summary["points"]] == expected
         checks["viewport_and_label_offsets_preserve_values"] = True
         controller.edit_path("copy", "路径 β / comparison"); settle(controller)
         controller.edit_path("color", "#d59139"); settle(controller)
-        QTest.mouseClick(panel.compare_box, Qt.MouseButton.LeftButton)
+        if not panel.compare_box.isChecked():
+            QTest.mouseClick(panel.compare_box, Qt.MouseButton.LeftButton)
         settle(controller); rendered(panel)
         assert len(panel.last_payload["paths"]) == 2
         checks["multi_path_comparison"] = True
-        js(panel.page,"Plotly.Fx.unhover(document.getElementById('plot')); true")
+        js(panel.page,"Plotly.Fx.unhover(document.querySelector('#plot .plotly-host')); true")
         QTest.mouseMove(window, QPoint(25,25))
         QTest.qWait(150)
         assert window.grab().save(str(output / "profile-2d.png"))
+        export_started = monotonic()
         for format in ("png", "svg", "pdf", "html"):
             assert panel.export_to(run / ("export-2d-" + format), format, language="zh_CN")
             settle(controller)
@@ -128,6 +134,7 @@ def main():
             if format != "html":
                 shutil.copyfile(run/("export-2d-"+format)/("profile."+format),output/("export-2d."+format))
         checks["two_dimensional_exports"] = True
+        performance["2d_four_exports_ms"] = round((monotonic() - export_started) * 1000, 3)
         from PySide6.QtWebEngineWidgets import QWebEngineView
         from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
         from gaussianreadpro.prototype import OfflineRequests
@@ -142,15 +149,19 @@ def main():
         extra_view.load(QUrl.fromLocalFile(str(run / "export-2d-html/profile.html")))
         wait(lambda: bool(js(exported_page, "Boolean(window.grpr && window.grpr.shown)")), "portable offline HTML")
         assert js(exported_page,"window.grpr.shown.paths[0].points[1].value") == expected[1]
-        js(exported_page,"Plotly.relayout(document.getElementById('plot'), {'xaxis.range':[-1,5]}); true")
+        js(exported_page,"Plotly.relayout(document.querySelector('#plot .plotly-host'), {'xaxis.range':[-1,5]}); true")
         wait(lambda:js(exported_page,"window.grpr.shown.viewport.x_range && window.grpr.shown.viewport.x_range[1]===5"),"standalone viewport")
         count=js(exported_page,"window.grpr.renderCount")
-        js(exported_page,"document.getElementById('plot').emit('plotly_legendclick',{curveNumber:2}); true")
+        js(exported_page,"document.querySelector('#plot .plotly-host').emit('plotly_legendclick',{curveNumber:2}); true")
         wait(lambda:js(exported_page,"window.grpr.renderCount")>count,"standalone legend redraw")
-        assert js(exported_page,"document.getElementById('plot').layout.xaxis.range[1]")==5
-        js(exported_page,"document.getElementById('view-toggle').click(); true")
-        wait(lambda:js(exported_page,"window.grpr.shown.view==='3d'"),"standalone 3D toggle")
-        assert js(exported_page,"document.getElementById('plot').querySelectorAll('canvas').length")>0
+        assert js(exported_page,"document.querySelector('#plot .plotly-host').layout.xaxis.range[1]")==5
+        js(exported_page,"document.querySelector('[data-mode=\"3d\"]').click(); true")
+        try:
+            wait(lambda:js(exported_page,"window.grpr.shown.view==='3d'"),"standalone 3D toggle")
+        except TimeoutError:
+            print("standalone_3d_notice=", js(exported_page, "document.getElementById('notice').textContent"), flush=True)
+            raise
+        assert js(exported_page,"Boolean(window.grpr.renderer3d && window.grpr.renderer3d.nodes.length)")
         assert not exported_requests.blocked
         checks["portable_html_without_qt_bridge"] = True
         extra_view.setPage(None)
@@ -159,20 +170,21 @@ def main():
         app.processEvents()
         panel.view_combo.setCurrentIndex(1)
         settle(controller); rendered(panel)
-        assert panel.summary["view"] == "3d" and panel.summary["canvas_count"] > 0, panel.warning.text()
-        camera={"eye":{"x":1.9,"y":1.6,"z":1.3},"center":{"x":0,"y":0,"z":0},"up":{"x":0,"y":0,"z":1}}
-        js(panel.page,"Plotly.relayout(document.getElementById('plot'), {'scene.camera':"+json.dumps(camera)+"}); true")
+        assert panel.summary["view"] == "3d" and panel.summary["renderer"] == "Three.js" and panel.summary["labels"] > 0, panel.warning.text()
+        js(panel.page,"window.grpr.renderer3d.orbit(15,-8); window.grpr.renderer3d.commit(); true")
         settle(controller); rendered(panel)
-        assert controller.plot_state["viewports"][panel.last_payload["context"]+"/3d"]["camera"]["eye"]["x"]==1.9
+        assert controller.plot_state["viewports"][panel.last_payload["context"]+"/3d"]["three_v1"]["projection"]=="orthographic"
         QTest.qWait(300)
         assert window.grab().save(str(output / "profile-3d.png"))
+        export_3d_started = monotonic()
         assert panel.export_to(run / "export-3d-png", "png", language="en")
         wait(lambda: not panel._capture and (run / "export-3d-png/profile.png").is_file(), "3D PNG capture", 40)
         settle(controller)
         shutil.copyfile(run/"export-3d-png/profile.png",output/"export-3d.png")
         assert panel.export_to(run / "export-3d-html", "html", language="en")
         settle(controller)
-        checks["real_scatter3d_and_png"] = True
+        performance["3d_png_html_exports_ms"] = round((monotonic() - export_3d_started) * 1000, 3)
+        checks["real_three_scene_and_png"] = True
         window.language_combo.setCurrentIndex(window.language_combo.findData("en")); settle(controller)
         window.theme_combo.setCurrentIndex(window.theme_combo.findData("dark")); settle(controller); rendered(panel)
         QTest.qWait(150)
@@ -192,9 +204,14 @@ def main():
         settle(controller); rendered(panel)
         original_count = panel.summary["trace_count"]
         original_svg_count = panel.summary["svg_count"]
+        performance["memory_before_100_updates"] = memory_snapshot()
+        updates_started = monotonic()
         for index in range(100):
             panel.set_table_selection([(controller.selected_path.id, controller.selected_path.entries[index % 4].id)])
             rendered(panel)
+        performance["hundred_updates_ms"] = round((monotonic() - updates_started) * 1000, 3)
+        QTest.qWait(300)
+        performance["memory_after_100_updates"] = memory_snapshot()
         assert panel.summary["trace_count"] == original_count
         assert panel.summary["listeners_bound"] == 1
         assert panel.summary["svg_count"] == original_svg_count
@@ -212,13 +229,17 @@ def main():
         assert "WebGL" in panel.warning.text()
         checks["webgl_fallback"] = True
         project_file = run / "S7-study.grproj"
-        controller.save(project_file); settle(controller)
+        settle(controller)
+        assert controller.save(project_file), "Save was not submitted"
+        settle(controller)
+        assert project_file.is_file(), f"Save did not create project: {errors}"
         with ProjectRepository(project_file, read_only=True) as repository:
             restored = repository.load()
         assert restored.plot_state == controller.project.plot_state
         checks["saved_plot_state"] = True
         assert not errors and not panel.blocked_requests
         report = {"passed": True, "platform": app.platformName(), "checks": checks, "errors": errors,
+                  "performance": performance,
                   "javascript_errors": panel.javascript_errors, "blocked_remote_requests": panel.blocked_requests,
                   "project": str(project_file), "run": str(run), "values": expected,
                   "final_summary": panel.summary}

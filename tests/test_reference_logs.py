@@ -55,6 +55,7 @@ def test_two_real_runs_concatenated_keep_sources_and_metadata_separate(tmp_path)
     last_scf = select_job(source, EnergyKind.SCF)
     assert last_scf.job.ordinal == 1 and last_scf.energy.source_line == 6534
     last_gibbs = select_job(source, EnergyKind.GIBBS_TOTAL)
-    assert last_gibbs.job.ordinal == 0 and last_gibbs.energy.source_line == 2061
+    assert last_gibbs.job.ordinal == 0 and last_gibbs.energy.source_line == 457
+    assert last_gibbs.energy.value_hartree == pytest.approx(-382.164914602, abs=1e-12)
     bound = select_job(source, EnergyKind.GIBBS_TOTAL, job_id=last_scf.job.id)
     assert not bound.available and bound.job.id == last_scf.job.id

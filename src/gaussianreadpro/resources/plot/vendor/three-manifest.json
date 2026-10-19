@@ -1,0 +1,45 @@
+{
+  "version": "0.170.0",
+  "camera": {
+    "projection": "orthographic",
+    "position": [
+      6,
+      -12,
+      8
+    ],
+    "target": [
+      0,
+      0,
+      0
+    ],
+    "up": [
+      0,
+      0,
+      1
+    ],
+    "zoom": 1,
+    "world_extent_x": 12.4,
+    "world_extent_z": 4.7,
+    "path_spacing": 1.8,
+    "fit_width_fraction": 0.9,
+    "fit_height_fraction": 0.79,
+    "measured_sample_width_fraction": 0.9,
+    "measured_sample_height_fraction": 0.7849347625351127
+  },
+  "assets": [
+    {
+      "file": "three.module.min.js",
+      "sha256": "08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7",
+      "bytes": 691648
+    },
+    {
+      "file": "THREE-LICENSE.txt",
+      "sha256": "4c40a1ef62450b857c3b2aaf294936304cd552d965fbcd9d32d4c5bcf4ba4454",
+      "bytes": 1081
+    }
+  ],
+  "source": "https://github.com/mrdoob/three.js/tree/r170",
+  "library": "Three.js",
+  "revision": "170",
+  "license": "MIT"
+}

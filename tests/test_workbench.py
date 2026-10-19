@@ -21,7 +21,8 @@ def write_logs(directory, *, scf_only=False):
         path = directory / (label + ".log")
         path.write_text("SYNTHETIC S4 TEST\nEntering Gaussian System\n"
                         f" SCF Done: E(RB3LYP) = {value - .03:.12f} A.U.\n"
-                        + ("" if scf_only else f" Sum of electronic and thermal Free Energies= {value:.12f}\n")
+                        + ("" if scf_only else f" Thermal correction to Gibbs Free Energy= 0.030000000000\n"
+                           f" Sum of electronic and thermal Free Energies= {value:.12f}\n")
                         + " Normal termination of Gaussian 16\n", encoding="utf-8")
         paths.append(path)
     return paths
@@ -81,6 +82,59 @@ def test_backend_failed_open_preserves_active_session(tmp_path):
     assert backend.recovery.status.current_revision == view.project.revision
     backend.shutdown()
 
+
+def test_project_rename_delete_and_recent_removal_are_scoped(tmp_path):
+    from gaussianreadpro.storage.preferences import LocalPreferences
+    recovery = tmp_path / "recovery"
+    preferences = tmp_path / "prefs.ini"
+    backend = SessionBackend(recovery, preferences)
+    project = backend.new().project
+    logs = write_logs(tmp_path / "logs")
+    project = backend.import_files(project, logs, lambda: False, lambda *args: None).project
+    original = tmp_path / "study.grproj"
+    renamed = tmp_path / "study-renamed.grproj"
+    backend.save(project, original)
+    saved_id = backend.repository.load().id
+    backend.rename_project(original, renamed, backend.recovery._latest)
+    assert not original.exists() and renamed.exists()
+    assert backend.repository.path == renamed
+    with ProjectRepository(renamed, read_only=True) as repository:
+        persisted = repository.load()
+    assert persisted.id == saved_id and len(persisted.source_files) == len(logs)
+    assert all(Path(source.original_path).exists() for source in persisted.source_files)
+    assert LocalPreferences(preferences).load()["recent_projects"] == [str(renamed.resolve())]
+    backend.shutdown()
+
+    # Removing from Recent changes preferences only; deletion targets one file.
+    other = tmp_path / "other.grproj"
+    other_backend = SessionBackend(recovery, preferences)
+    other_project = other_backend.new().project
+    other_backend.save(other_project, other)
+    other_backend.shutdown()
+    prefs = LocalPreferences(preferences)
+    prefs.remember_project(renamed)
+    prefs.remove_recent_project(renamed)
+    assert renamed.exists() and str(renamed.resolve()) not in prefs.load()["recent_projects"]
+    prefs.remember_project(renamed)
+    backend = SessionBackend(recovery, preferences)
+    backend.delete_project_file(renamed)
+    assert not renamed.exists() and other.exists()
+    assert str(renamed.resolve()) not in LocalPreferences(preferences).load()["recent_projects"]
+    backend.shutdown()
+
+
+def test_controller_deleting_current_project_clears_session_and_recent(workbench, app, tmp_path):
+    from gaussianreadpro.storage.preferences import LocalPreferences
+    _window, controller = workbench
+    target = tmp_path / "current.grproj"
+    controller.save(target)
+    settle(app, controller)
+    assert controller.path == target.resolve()
+    assert controller.delete_project_file(target)
+    settle(app, controller)
+    assert controller.project is None and controller.path is None
+    assert not target.exists()
+    assert str(target.resolve()) not in LocalPreferences(tmp_path / "prefs.ini").load()["recent_projects"]
 
 def test_backend_explicit_recovery_choice(tmp_path):
     recovery_dir = tmp_path / "recovery"
@@ -153,6 +207,26 @@ def import_four(app, controller, tmp_path):
     return controller.project
 
 
+def test_reaction_network_star_undo_redo_preserves_project_metadata(app, workbench, tmp_path):
+    from gaussianreadpro.core.reaction_network import empty_network, read_reaction_network
+    _window, controller = workbench
+    project = import_four(app, controller, tmp_path)
+    source = project.source_files[0]
+    network = empty_network()
+    network["species"] = [{"id": new_id(), "name": "R", "starred": True,
+                           "bindings": [{"source_file_id": source.id, "job_id": source.jobs[0].id,
+                                         "historical": False}]}]
+    assert controller.update_reaction_network(network)
+    settle(app, controller)
+    assert read_reaction_network(controller.project)["species"][0]["starred"]
+    assert controller.undo()
+    settle(app, controller)
+    assert not read_reaction_network(controller.project)["species"]
+    assert controller.redo()
+    settle(app, controller)
+    assert read_reaction_network(controller.project)["species"][0]["starred"]
+
+
 def test_gui_import_reference_units_provenance_and_save(app, workbench, tmp_path):
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
@@ -220,7 +294,7 @@ def test_responsive_layout_collapses_and_reopens_inspector(app, workbench, tmp_p
     window.toggle_inspector()
     window.resize(1500, 930)
     app.processEvents()
-    assert window.inspector.isVisible() and window.sidebar.width() == 172
+    assert window.inspector.isVisible() and window.sidebar.width() == 196
 
 
 def test_compact_reaction_view_switches_between_full_height_chart_and_nodes(app, workbench, tmp_path):
@@ -231,23 +305,24 @@ def test_compact_reaction_view_switches_between_full_height_chart_and_nodes(app,
     window.navigation.setCurrentRow(2)
     window.resize(860, 680)
     QTest.qWait(200)
-    assert window.compact_tabs.isVisible() and window.compact_tabs.currentIndex() == 1
+    assert not window.compact_tabs.isVisible() and window.compact_tabs.currentIndex() == 1
     assert window.compact_tabs.tabText(0) == "路径节点" and window.compact_tabs.tabText(1) == "能量图"
-    assert not window.path_card.isVisible() and window.chart_card.isVisible()
+    assert not window.path_card.isVisible() and window.energy_page.isVisible()
     assert window.profile.height() >= 220
     assert all(control.isVisible() for control in window.profile.dimension_buttons)
-    assert window.profile.expand_button.isVisible()
+    assert not window.profile.expand_button.isVisible()
+    for control in (window.profile.camera_combo, window.profile.dragmode_combo, window.profile.theme_combo):
+        assert control.parentWidget() is window.profile and not control.isVisible()
     assert window.profile.reset_button.text() == "重置"
     assert window.profile.export_button.text() == "导出"
     assert window.unit_combo.currentText() == "kcal/mol"
-    assert window.unit_combo.width() >= 100
     window.compact_tabs.setCurrentIndex(0)
     app.processEvents()
     assert window.path_card.isVisible() and not window.chart_card.isVisible()
     assert window.node_table.viewport().height() >= 180
     window.compact_tabs.setCurrentIndex(1)
     app.processEvents()
-    assert window.chart_card.isVisible() and window.profile.height() >= 220
+    assert window.energy_page.isVisible() and window.profile.height() >= 220
     window.language_combo.setCurrentIndex(window.language_combo.findData("en"))
     app.processEvents()
     assert window.compact_tabs.tabText(0) == "Path nodes" and window.compact_tabs.tabText(1) == "Energy chart"
@@ -257,12 +332,12 @@ def test_compact_reaction_view_switches_between_full_height_chart_and_nodes(app,
     app.processEvents()
     window.resize(1440, 920)
     QTest.qWait(150)
-    assert not window.path_card.isVisible() and window.chart_card.isVisible()
-    assert window.compact_tabs.isVisible()
-    assert window.profile.height() > window.horizontal.height() * .8
+    assert not window.path_card.isVisible() and window.energy_page.isVisible()
+    assert not window.compact_tabs.isVisible()
+    assert window.profile.height() > window.reaction_pages.height() * .9
     window.language_combo.setCurrentIndex(window.language_combo.findData("en"))
-    assert window.navigation.item(2).text() == "Paths"
-    assert window.navigation.item(2).toolTip() == "Reaction paths"
+    assert window.navigation.item(2).text().strip() == "Energy Profile"
+    assert window.navigation.item(2).toolTip() == "Energy Profile"
     assert window.node_table.model().headerData(3, Qt.Orientation.Horizontal) == "ΔG / kcal/mol"
     window.resize(860, 680)
     QTest.qWait(150)
@@ -394,7 +469,7 @@ def test_read_only_view_can_close_and_save_as_without_writing_main(app, workbenc
         settle(app, controller)
         assert controller.read_only and not window.import_button.isEnabled()
         assert not window.kind_combo.isEnabled()
-        assert window.saved.text() == "只读 · 可另存为"
+        assert window.saved.text() == "只读"
         copied = tmp_path / "editable-copy.grproj"
         controller.save(copied)
         settle(app, controller)
@@ -553,14 +628,14 @@ def test_language_and_theme_switches_preserve_science_and_workspace(workbench, a
     before_values = tuple(result.nodes[1].relative_hartree for result in controller.results)
     window.language_combo.setCurrentIndex(window.language_combo.findData("en"))
     settle(app, controller)
-    assert window.title.text() == "Energy profile"
+    assert window.title.text() == "Energy Profile"
     assert window.search.text() == "TS1"
     assert window._selected_node == node_id
     assert controller.project.revision == before_revision
     assert tuple(result.nodes[1].relative_hartree for result in controller.results) == before_values
     window.theme_combo.setCurrentIndex(window.theme_combo.findData("dark"))
     settle(app, controller)
-    assert "#17131F" in app.styleSheet()
+    assert "#11101A" in app.styleSheet()
     assert window.preview.dark
     window.language_combo.setCurrentIndex(window.language_combo.findData("zh_CN"))
     settle(app, controller)

@@ -29,6 +29,7 @@ def _load():
     if type(data) is not dict or data.get("version") != 1:
         raise ValueError("Unsupported lavender/sunset theme resource")
     themes, metrics = data.get("themes"), data.get("metrics")
+    profile_themes = data.get("profile_themes")
     if type(themes) is not dict or set(themes) != {"light", "dark"}:
         raise ValueError("Theme resource must define light and dark palettes")
     if type(metrics) is not dict or set(metrics) != _METRIC_KEYS:
@@ -50,6 +51,16 @@ def _load():
         raise ValueError("Theme metrics must be positive numbers")
     if any(not 0 < metrics[key] <= 1 for key in ("glass_opacity", "glass_toolbar_opacity", "overlay_opacity")):
         raise ValueError("Glass opacity must be within (0, 1]")
+    if type(profile_themes) is not dict or set(profile_themes) != {"light", "dark"}:
+        raise ValueError("Theme resource must define light and dark profile palettes")
+    profile_keys = {"canvas", "header", "sidebar", "panel", "panel_highlight", "border", "grid",
+                    "axis", "text", "muted", "path_a", "path_b", "focus", "curve_core"}
+    for name, profile in profile_themes.items():
+        if type(profile) is not dict or set(profile) != profile_keys:
+            raise ValueError(f"Invalid profile token set for {name}")
+        if any(not isinstance(value, str) or not (_HEX.fullmatch(value) or _RGBA.fullmatch(value))
+               for value in profile.values()):
+            raise ValueError(f"Invalid profile colour token in {name}")
     return data
 
 
@@ -59,4 +70,5 @@ def get_palette(theme="light"):
         raise ValueError("theme must be 'light' or 'dark'")
     data = _load()
     return {"name": theme, "colors": deepcopy(data["themes"][theme]),
+            "profile": deepcopy(data["profile_themes"][theme]),
             "metrics": deepcopy(data["metrics"]), "icons": tuple(data["icons"])}

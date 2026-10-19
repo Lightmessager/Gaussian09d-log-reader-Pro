@@ -1,10 +1,10 @@
 """Component and expert editors sharing the core expression document."""
 
 from PySide6.QtCore import Qt, QTimer, QStringListModel, QLocale, QMimeData
-from PySide6.QtGui import QColor, QTextCursor, QTextCharFormat, QDrag, QFontDatabase
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QCompleter, QDialog,
+from PySide6.QtGui import QColor, QTextCursor, QTextCharFormat, QDrag, QFontDatabase, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QCompleter, QDialog, QFileDialog,
     QDoubleSpinBox, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTableWidget,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget, QHeaderView, QListWidget, QListWidgetItem, QSplitter, QLineEdit)
+    QTabWidget, QTextEdit, QVBoxLayout, QWidget, QHeaderView, QListWidget, QListWidgetItem, QSplitter, QLineEdit, QSizePolicy)
 
 from ..core.expressions import (AliasIndex, components_expression, composite_gibbs_expression,
     edit_expression, render_expression)
@@ -177,7 +177,7 @@ class ExpressionDialog(QDialog):
         self.document = self.document or edit_expression(None, "", self.aliases)
         self.setWindowTitle(self.t("编辑节点表达式") if node else self.t("编辑参考体系"))
         self.resize(1160, 800)
-        self.setMinimumSize(860, 640)
+        self.setMinimumSize(800, 600)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 16)
         layout.setSpacing(12)
@@ -301,7 +301,7 @@ class ExpressionDialog(QDialog):
         self.text.setObjectName("expertExpression")
         self.text.setAccessibleName(self.t("专家表达式文本"))
         self.text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        self.text.setMinimumHeight(260)
+        self.text.setMinimumHeight(180)
         self.text.setPlainText(self.document.draft_text if self.document.draft_text is not None
                                else render_expression(self.document, self.aliases))
         expert_layout.addWidget(self.text)
@@ -331,11 +331,25 @@ class ExpressionDialog(QDialog):
         preview_layout.addWidget(self.preview)
         layout.addWidget(preview_panel)
         footer = QHBoxLayout()
-        footer.addWidget(QLabel(self.t("有效表达式和无效草稿均自动保存；关闭后可继续编辑。")))
+        self.save_status = QLabel()
+        self.save_status.setObjectName("muted")
+        self.save_status.setWordWrap(True)
+        self.save_status.setMinimumWidth(0)
+        self.save_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.save_status.setTextFormat(Qt.TextFormat.PlainText)
+        footer.addWidget(self.save_status, 1)
+        self.save_status.setText(self.project_target_text())
         footer.addStretch()
-        self.close_button = self.make_button("完成", self.accept)
+        self.save_button = self.make_button("保存表达式", self.save_expression)
+        footer.addWidget(self.save_button)
+        self.save_close_button = self.make_button("保存并关闭", lambda: self.save_expression(close_after=True))
+        footer.addWidget(self.save_close_button)
+        self.close_button = self.make_button("关闭", self.reject)
         footer.addWidget(self.close_button)
         layout.addLayout(footer)
+        self.save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
+        self.save_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.save_shortcut.activated.connect(self.save_expression)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.flush)
@@ -348,12 +362,82 @@ class ExpressionDialog(QDialog):
         self.tabs.currentChanged.connect(self.tab_changed)
         self.controller.changed.connect(self.update_preview)
         self.controller.busyChanged.connect(self.worker_changed)
+        self.controller.statusChanged.connect(self.project_status_changed)
+        self.controller.failed.connect(self.save_failed)
+        self._save_requested = False
+        self._close_after_save = False
         self._loading = False
         self.update_diagnostics()
         self.update_preview()
 
     def t(self, text):
         return translate(text, self.language)
+
+    def project_target_text(self):
+        return self.t("目标项目：") + (str(self.controller.path) if self.controller.path else self.t("未命名项目（恢复副本）"))
+
+    def save_expression(self, close_after=False):
+        self._save_requested = True
+        self._close_after_save = self._close_after_save or close_after
+        self._save_started = False
+        self.save_status.setText(self.t("正在提交当前表达式…"))
+        self.save_button.setEnabled(False)
+        self.save_close_button.setEnabled(False)
+        self.timer.stop()
+        self.flush()
+        self._continue_explicit_save()
+
+    def _continue_explicit_save(self):
+        if not self._save_requested or self._save_started or self.controller.busy or self._dirty:
+            return
+        self._save_started = True
+        destination = None
+        if self.controller.path is None or self.controller.read_only:
+            destination, _ = QFileDialog.getSaveFileName(self, self.t("保存研究项目"), "研究项目.grproj",
+                "GaussianReaderPro (*.grproj)")
+            if not destination:
+                self._save_started = False
+                self._save_requested = False
+                self._close_after_save = False
+                self._save_buttons(True)
+                self.save_status.setText(self.t("未保存到项目；草稿仍保留在恢复副本。"))
+                return
+            if not destination.lower().endswith(".grproj"):
+                destination += ".grproj"
+        self._save_target = str(destination or self.controller.path)
+        revision = self.controller.project.revision
+        if not self.controller.save(destination):
+            self._save_started = False
+            self._save_buttons(True)
+            self.save_status.setText(self.t("保存未启动；请重试。"))
+            return
+        self._save_revision = revision
+
+    def _save_buttons(self, enabled):
+        self.save_button.setEnabled(enabled)
+        self.save_close_button.setEnabled(enabled)
+
+    def project_status_changed(self, status):
+        if not self._save_requested or not self._save_started or not status:
+            return
+        project = self.controller.project
+        if status.error_code or status.recovery_error_code:
+            self.save_failed(status.error_code or status.recovery_error_code, "")
+        elif project and status.saved_revision is not None and status.saved_revision >= project.revision and not self.controller._workspace_dirty and not self.controller._plot_dirty:
+            self.save_status.setText(self.t("已保存到：") + self._save_target)
+            self._save_requested = self._save_started = False
+            should_close, self._close_after_save = self._close_after_save, False
+            self._save_buttons(True)
+            if should_close:
+                super().done(QDialog.DialogCode.Accepted)
+
+    def save_failed(self, code, detail):
+        if not self._save_requested:
+            return
+        self._save_requested = self._save_started = False
+        self._close_after_save = False
+        self._save_buttons(True)
+        self.save_status.setText(self.t("保存失败：") + str(code) + " · " + self.t("表达式草稿仍保留，可重试或另存为。"))
 
     def make_button(self, text, callback):
         result = QPushButton(self.t(text))
@@ -670,6 +754,8 @@ class ExpressionDialog(QDialog):
         if not busy:
             if self._dirty:
                 self.timer.start(0)
+            elif self._save_requested:
+                QTimer.singleShot(0, self._continue_explicit_save)
             elif self._finish_code is not None:
                 super().done(self._finish_code)
 

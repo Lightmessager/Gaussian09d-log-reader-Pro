@@ -1,0 +1,30 @@
+# RF8: analysis navigation modules
+
+Status: **RF8 source implementation complete; Windows release package remains at the earlier RF7 build**.
+
+## Implemented in this pass
+
+- Replaced the RF8 generic placeholder routes with source/job-bound pages for Structures, Vibrations, Thermochemistry, NBO Analysis, IRC Analysis and Log Viewer. Settings route points to the existing local preference controls; Home and the energy workbench already had project workflows.
+- Added a worker-side reader that limits source reads to 64 MiB, verifies the full SHA-256 against the imported source and rejects changed files or job ranges before presenting results.
+- Structures uses the existing orientation parser in the exact job range. Its coordinate table exports CSV; the preview supports mouse-drag rotation and uses only parsed atom coordinates and the existing display-only bond heuristic.
+- Vibrations reads Gaussian harmonic `Frequencies ---` / `IR Intensities ---` rows. It does not count the repeated `Frequencies --` normal-coordinate listing as additional modes, does not infer missing intensities, and does not fabricate animation vectors.
+- Thermochemistry presents only explicit Gaussian terms and conditions with their original line numbers. Gibbs correction and Gibbs total remain distinct; missing values are not derived.
+- Tables presents the project's current evaluated path entries, supports text filtering and CSV export, and collects all dependency sources for each row.
+- Log Viewer reads one selected job on demand and displays it in a plain-text widget, so log content cannot execute as HTML.
+- NBO 3.1 reads the Natural Population Analysis summary and second-order E(2) donor/acceptor table, with value units, filtering and source line per row. Other NBO versions are explicitly unsupported.
+- IRC reads the explicit Gaussian forward/reverse direction and path number, the relative-to-TS energy summary, and each point's `CURRENT STRUCTURE` coordinates. The summary reaction coordinate is checked against the named point's reported net coordinate. The table retains point, geometry and summary line numbers; choosing a point changes the rotatable structure view. The TS row has no geometry when the job provides only checkpoint coordinates. A one-branch job remains one branch. Incomplete output, unsupported layout, absent IRC data, and mismatched summary/point data have separate statuses. Ordinary energy paths are never used as IRC data.
+
+## Verification
+
+- Parser tests cover imaginary-frequency sign, source-line retention, explicit Gibbs correction vs total, no-data classification, and NBO 3.1 NPA/E(2) rows plus unsupported-version handling.
+- Installed local Gaussian16 `dvb_ir.out` oracle: one job; **54 harmonic modes** counted once (the separate mode-vector listing is ignored); first mode 53.1981 cm⁻¹ at line 777; 0 imaginary modes; Gibbs correction 0.143352 Eh at line 2057; Gibbs total -382.164915 Eh at line 2061; T=298.15 K, P=1 atm.
+- NBO format contract was checked against the real Gaussian16 NBO 3.1 regression output [`water_neutral_nbo_opt.out`](https://github.com/cclib/cclib-data/blob/master/Gaussian/Gaussian16/water_neutral_nbo_opt.out) (blob SHA `547cca5431831e22e529ccbe7498c33f05f5519f`); only compact table rows are used in the offline unit regression, and the full Gaussian output is not vendored.
+- Real Qt/controller source-bound smoke passed: imported the local sample, loaded 54 mode rows, explicit thermochemistry, one job as plain text, and a 20-atom coordinate table through the asynchronous controller worker after fingerprint verification.
+- NBO page UI smoke passed: parsed two NPA/E(2) rows and search-filtered them by value. `compileall` and RF8 analysis parser tests passed (6 tests). Full suite: **312 passed in 153.54s** after the NBO 3.1 parser addition. After the final localization update: `compileall` passed; focused RF8/workbench tests **32 passed in 50.49s**.
+- The installed Gaussian reference set did not include a two-branch IRC output. For this completion, the public Gaussian16 [`HCN-ts-irc.log`](https://github.com/mizu-bai/Gaussian-MOKIT-Molpro/blob/master/example/HCN/gau/HCN-ts-irc.log) was read as a local, unvendored oracle (154,413 bytes; SHA-256 `810058e1d0d1bd0a365d9bb20b0e42ced4383feddaccb8bd27f3b43846ad71ae`). It has one parsed job, 10 forward points, 10 reverse points, one TS summary row, and 20 complete three-atom `CURRENT STRUCTURE` blocks. Summary lines 2666–2686 map to reverse 10→1, TS, then forward 1→10; TS energy is -93.114020 Eh. The same SHA-bound reader accepts the original and rejects an altered fingerprint; the Qt IRC page switches between real forward/reverse point geometries. The full output is not copied into the repository.
+- A compact format regression checks both branches, an explicit single branch, geometry association, summary mismatch and incomplete output. `GAUSSIAN_IRC_REFERENCE=<local path>` enables the full-oracle parser/source/UI test. Focused RF8 tests: **11 passed** with this variable; `compileall` passed. The first full run found one missing zh_CN locale key set (316 passed, 1 failed); after synchronizing the catalog keys, the focused check passed and the full suite passed **317/317 in 164.04s**.
+- Final IRC UI status cleanup was followed by the focused IRC + locale check: **12 passed**. To rerun the real-sample check in PowerShell, set `$env:GAUSSIAN_IRC_REFERENCE` to a local copy of the linked HCN output, then run `.venv\Scripts\python.exe -m pytest tests/test_gaussian_analyses.py -q`; the full suite is `.venv\Scripts\python.exe -m pytest -q`.
+
+## Scope and remaining compatibility limits
+
+The IRC reader supports the observed Gaussian09/16 `Point Number`/`Path Number`, `CURRENT STRUCTURE`, and relative-to-TS summary layout. Other IRC layouts return an explicit unsupported/error state. NBO support remains Gaussian NBO 3.1 NPA and E(2). Rotation is display-only; bonds use the existing distance heuristic for point structures up to 200 atoms. The v.1.0 Windows package now includes RF8; its PE, resource and archive audit is recorded in the new package validation report.

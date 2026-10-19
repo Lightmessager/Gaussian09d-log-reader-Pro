@@ -17,7 +17,7 @@ def _qcolor(value):
     return QColor(value)
 
 
-def _stylesheet(c, m, reduced):
+def _stylesheet(c, m, reduced, profile=None):
     c = dict(c)
     for key in ("glass_fill", "glass_toolbar", "overlay"):
         match = re.fullmatch(r"rgba\((\d+),(\d+),(\d+),(0(?:\.\d+)?|1(?:\.0+)?)\)", c[key])
@@ -27,6 +27,12 @@ def _stylesheet(c, m, reduced):
             c[key] = f"rgba({r},{g},{b},{a})"
     card = c["surface"] if reduced else c["glass_fill"]
     toolbar = c["elevated"] if reduced else c["glass_toolbar"]
+    profile = dict(profile or {})
+    for key, value in tuple(profile.items()):
+        match = re.fullmatch(r"rgba\((\d+),(\d+),(\d+),(0(?:\.\d+)?|1(?:\.0+)?)\)", value)
+        if match:
+            r, g, b = (int(match.group(i)) for i in (1, 2, 3))
+            profile[key] = f"rgba({r},{g},{b},{round(float(match.group(4)) * 255)})"
     return f"""
 QMainWindow, QWidget#root {{ background:{c['canvas']}; color:{c['text']}; }}
 QWidget {{ color:{c['text']}; font-size:{m['font_body']}px; }}
@@ -112,6 +118,23 @@ QLabel#editorDiagnostics {{ background:{c['field']}; color:{c['muted']}; border:
 QLabel#editorDiagnostics[status="valid"] {{ color:{c['success']}; border-color:{c['border']}; }}
 QLabel#editorDiagnostics[status="error"] {{ color:{c['danger']}; border-color:{c['danger']}; background:{c['field_hover']}; }}
 QLabel#batchSelectionSummary {{ color:{c['primary']}; background:{c['primary_soft']}; border:1px solid {c['border']}; border-radius:8px; padding:7px 9px; }}
+QWidget#root {{ background:{profile.get('canvas', c['canvas'])}; }}
+QFrame#topbar {{ background:{profile.get('header', toolbar)}; border:0; border-bottom:1px solid {profile.get('border', c['border'])}; border-radius:0; }}
+QFrame#sidebar {{ background:{profile.get('sidebar', c['navigation'])}; border:0; border-right:1px solid {profile.get('border', c['border'])}; border-radius:0; }}
+QFrame#sidebar QLabel {{ color:{profile.get('muted', c['muted'])}; }}
+QListWidget#navigation {{ color:{profile.get('muted', c['muted'])}; font-size:14px; }}
+QListWidget#navigation::item {{ border-radius:10px; margin:3px 7px; padding:10px 0px 10px 10px; }}
+QListWidget#navigation::item:selected {{ background:{profile.get('panel_highlight', c['primary_soft'])}; border-left:3px solid {profile.get('focus', c['sunset'])}; color:{profile.get('text', c['text'])}; }}
+QFrame#profileChart {{ background:transparent; border:0; border-radius:0; }}
+QFrame#profileInspector {{ background:{profile.get('panel', c['glass_fill'])}; border:1px solid {profile.get('border', c['border'])}; border-radius:16px; }}
+QFrame#profileToolbar {{ background:{profile.get('panel', c['glass_toolbar'])}; border:1px solid {profile.get('border', c['border'])}; border-radius:14px; }}
+QPushButton#profileDimension {{ color:{profile.get('muted', c['muted'])}; border:1px solid transparent; min-width:54px; min-height:30px; padding:5px 12px; }}
+QPushButton#profileDimension:checked {{ background:{profile.get('panel_highlight', c['primary_soft'])}; color:{profile.get('text', c['text'])}; border-color:{profile.get('focus', c['primary'])}; }}
+QFrame#profileInspector QLabel {{ color:{profile.get('text', c['text'])}; }}
+QLabel#brand {{ color:{profile.get('text', c['text'])}; font-size:20px; font-weight:600; }}
+QLabel#headerPage {{ color:{profile.get('axis', c['muted'])}; font-size:18px; }}
+QPushButton#shellAction {{ background:transparent; border:0; border-radius:6px; font-size:14px; padding:6px 12px; min-height:24px; }}
+QPushButton#shellAction:hover {{ background:{profile.get('panel_highlight', c['primary_soft'])}; }}
 """
 
 
@@ -123,7 +146,7 @@ def _apply_palette(app, c):
         QPalette.ColorRole.Text: "text", QPalette.ColorRole.Button: "surface",
         QPalette.ColorRole.ButtonText: "text", QPalette.ColorRole.Highlight: "primary",
         QPalette.ColorRole.HighlightedText: "surface", QPalette.ColorRole.ToolTipBase: "overlay",
-        QPalette.ColorRole.ToolTipText: "text",
+        QPalette.ColorRole.ToolTipText: "text", QPalette.ColorRole.Mid: "muted",
     }
     for role, token in mapping.items():
         palette.setColor(role, _qcolor(c[token]))
@@ -152,7 +175,7 @@ def apply_theme(app, theme="light", *, reduced=False, reduce_motion=False):
     dark = theme == "dark" or theme == "system" and system_dark
     tokens = get_palette("dark" if dark else "light")
     _apply_palette(app, tokens["colors"])
-    app.setStyleSheet(_stylesheet(tokens["colors"], tokens["metrics"], reduced))
+    app.setStyleSheet(_stylesheet(tokens["colors"], tokens["metrics"], reduced, tokens["profile"]))
     app.setProperty("glassTheme", "dark" if dark else "light")
     app.setProperty("glassReducedEffects", bool(reduced))
     app.setProperty("glassReduceMotion", bool(reduce_motion))

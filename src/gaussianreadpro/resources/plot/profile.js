@@ -1,7 +1,10 @@
 /* Protocol 2: render only. All energies, differences and label coordinates originate in Python. */
 "use strict";
 (() => {
-const plot = document.getElementById('plot');
+const host = document.getElementById('plot');
+const plot = document.createElement('div');plot.className='plotly-host';host.append(plot);
+plot.style.width='100%';plot.style.height='100%';
+let scene3d=null,sceneHost=null;
 Plotly.register({moduleType:'locale',name:'zh-CN',dictionary:{'Zoom':'缩放','Pan':'平移','Box Select':'框选','Lasso Select':'套索选择',
  'Zoom in':'放大','Zoom out':'缩小','Autoscale':'自动范围','Reset axes':'重置坐标轴','Reset camera to default':'重置相机',
  'Reset camera to last save':'恢复相机','Orbit rotation':'旋转','Turntable rotation':'转台旋转','Toggle Spike Lines':'辅助线',
@@ -16,6 +19,7 @@ const sameCamera = (a,b) => !!a&&!!b&&['eye','center','up'].every(k=>['x','y','z
   a[k]?.[axis]===b[k]?.[axis]||Math.abs(a[k]?.[axis]-b[k]?.[axis])<1e-7));
 const isCompact = data => data.view==='3d'&&!data.image_capture&&plot.clientHeight<360;
 function notify(type, data, payload = shown) {
+  if(window.GRPR_STANDALONE&&type==='select'&&data.points?.length){const p=data.points.at(-1);window.GRPR_OFFLINE_ACTION({action:'select',...p,additive:data.additive});return;}
   if (bridge && payload) bridge.event(JSON.stringify({type, project_id:payload.project_id, revision:payload.revision, render_id:payload.render_id, ...data}));
 }
 function hover(p, path, data) {
@@ -30,10 +34,14 @@ function hover(p, path, data) {
     rows.push(`${esc(t.absolute)}: ${num(p.absolute_hartree)} Eh`);
   }
   if (source) rows.push(`${esc(t.source)}: ${esc(source.source_label)} · ${esc(t.job)} ${esc((source.job_id || '').slice(0,8))} · ${esc(t.line)} ${esc(source.source_line)}`);
+  if(p.starred_species?.length)rows.push(`★ ${p.starred_species.map(esc).join('、')}`);
   return rows.join('<br>');
 }
+let webglAvailable;
 function webgl() {
-  try { const c=document.createElement('canvas'); return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch(e) { return false; }
+  if(webglAvailable!==undefined)return webglAvailable;
+  try { const c=document.createElement('canvas'),gl=c.getContext('webgl2');webglAvailable=!!gl;gl?.getExtension('WEBGL_lose_context')?.loseContext(); }
+  catch(e) {webglAvailable=false;}return webglAvailable;
 }
 function tint(hex, amount) {
   const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16));
@@ -109,7 +117,7 @@ function traces(data) {
     all.push(halo(selected,is3d?30:42,focus,.13,'selected-glow'));
     all.push(halo(selected,is3d?18:25,focus,1,'selected-ring',true));
     all.push({...base,mode:is3d?'markers+text':'markers',x:valid.map(p=>p.x),y:valid.map(p=>is3d?path.category:p.value),
-      ...(is3d?{z:valid.map(p=>p.value),text:valid.map(p=>!compact&&(labelCount<=8||p.selected||p.role==='transition_state')?`<b>${esc(p.label_short)}</b><br>${esc(p.value_label)}`:''),textposition:'top center',textfont:{size:13,color:valid.map(p=>p.selected?focus:tint(path.color,.45))}}:{}),
+      ...(is3d?{z:valid.map(p=>p.value),text:valid.map(p=>!compact&&(labelCount<=8||p.selected||p.role==='transition_state')?`<b>${p.starred_species?.length?'★ ':''}${esc(p.label_short)}</b><br>${esc(p.value_label)}`:''),textposition:'top center',textfont:{size:13,color:valid.map(p=>p.selected?focus:tint(path.color,.45))}}:{}),
       customdata:valid.map(p=>[path.id,p.entry_id,p.node_id,hover(p,path,data)]),
       marker:{size:valid.map(p=>is3d?(p.selected?11:8):(p.selected?16:12)),
         color:valid.map(p=>p.selected?focus:tint(path.color,data.dark?.24:0)),symbol:'circle',
@@ -122,16 +130,48 @@ function traces(data) {
       const upper=p.value>range[0]+(range[1]-range[0])*.65;
       labels.push({path_id:path.id,entry_id:p.entry_id,x:p.x,y:p.value,
         ax:dense2d?Math.max(-48,Math.min(48,p.label_offset[0])):p.label_offset[0],
-        ay:dense2d?(upper?32:-32):p.label_offset[1]});
+        ay:dense2d?Math.max(-84,Math.min(84,p.label_offset[1])):p.label_offset[1]});
     }
   }
   return {all,labels};
 }
 async function render(data) {
+  document.body.style.pointerEvents=data.image_capture?'none':'';
   if(data.protocol_version!==2) throw new Error('Unsupported plot protocol');
   if(shown && data.project_id===shown.project_id && data.render_id<shown.render_id) return;
+  window.replicaWorkbench?.update(data);
   let fallback = '';
   if(data.view==='3d' && (!webgl() || window.GRPR_FORCE_NO_WEBGL)) { data={...data,view:'2d'}; fallback=data.text.webgl; notify('webgl_fallback',{},data); }
+  if(data.view==='3d'&&!window.GRPR_FORCE_PLOTLY){
+    try {
+      if(!scene3d){
+        const {ProfileRenderer}=await (window.GRPR_MODULES?.scene||import('./scene3d.js'));
+        sceneHost=document.createElement('div');sceneHost.className='scene-host';host.append(sceneHost);
+        scene3d=new ProfileRenderer({
+          select:(path,point,additive)=>window.grpr.selectPoint(path.id,point.entry_id,point.node_id,additive),
+          context:(path,point)=>notify('species_select',{path_id:path.id,entry_id:point.entry_id,node_id:point.node_id}),
+          viewport:(viewport)=>{if(shown?.view==='3d'){shown.viewport={...shown.viewport,...viewport};localViewports['3d']=shown.viewport;notify('view_state',{viewport});}},
+          failed:reason=>{notify('webgl_fallback',{reason});enqueue({...shown,view:'2d'});}
+        }).mount(sceneHost,document.getElementById('orientation-placeholder'));
+      }
+      plot.style.display='none';sceneHost.style.display='block';scene3d.setVisible(true);
+      const same=shown?.view==='3d'&&['project_id','unit','kind','mode'].every(k=>shown[k]===data[k]);
+      scene3d.setData(data);shown=data;renderCount++;
+      // Reconcile an in-flight gesture against the newest guarded bridge envelope.
+      if((same||data.viewport?.camera&&!data.viewport?.three_v1)&&JSON.stringify(data.viewport?.three_v1)!==JSON.stringify(scene3d.viewport()))scene3d.commit();
+      const missing=data.paths.flatMap(p=>p.points.filter(n=>n.missing_transition_state).map(n=>`${n.label} · NOT FOUND`));
+      document.getElementById('notice').textContent=[...data.warnings,...missing,scene3d.nodes.length?'':data.text.empty].filter(Boolean).join(' · ');
+      if(bridge)bridge.rendered(JSON.stringify({project_id:data.project_id,revision:data.revision,render_id:data.render_id,view:'3d',
+        points:data.paths.filter(p=>p.visible).flatMap(p=>p.points.filter(n=>n.valid&&n.value!=null).map(n=>({path_id:p.id,entry_id:n.entry_id,node_id:n.node_id,value:n.value}))),
+        ...scene3d.diagnostics(),capabilities:['three_v1','plotly-v1'],render_count:renderCount,listeners_bound:1}));
+      return;
+    } catch(error) {
+      fallback=(data.language==='en'?'3D unavailable; showing 2D: ':'三维不可用，已切换二维：')+String(error);
+      notify('webgl_fallback',{reason:String(error)},data);data={...data,view:'2d'};
+    }
+  }
+  if(fallback)window.replicaWorkbench?.update(data);
+  scene3d?.setVisible(false);if(sceneHost)sceneHost.style.display='none';plot.style.display='block';
   compact = isCompact(data);
   const narrow = plot.clientWidth < 900;
   const compactEnergy = data.mode === 'relative'
@@ -157,10 +197,10 @@ async function render(data) {
   annotations=labels;
   const pointFor = a => data.paths.find(p=>p.id===a.path_id).points.find(p=>p.entry_id===a.entry_id);
   const layout={paper_bgcolor:bg,plot_bgcolor:bg,font:{family:'Segoe UI,Microsoft YaHei,Noto Sans CJK SC,sans-serif',color:fg,size:12},
-    margin:compact?{l:12,r:12,t:28,b:15}:narrow?{l:106,r:16,t:36,b:52}:{l:76,r:24,t:45,b:60},hovermode:'closest',dragmode:data.view==='3d'?'orbit':'pan',
+    margin:compact?{l:12,r:12,t:28,b:15}:narrow?{l:106,r:16,t:36,b:52}:{l:76,r:24,t:45,b:60},hovermode:'closest',dragmode:data.camera_dragmode|| (data.view==='3d'?'orbit':'pan'),
     hoverlabel:{bgcolor:style.label_background||bg,bordercolor:style.label_line||zero,font:{color:fg,size:12},align:'left'},
     modebar:{bgcolor:bg,color:zero,activecolor:style.selection||fg},
-    title:{text:esc(data.text.reference)+': '+esc((data.paths.find(p=>p.id===data.active_path_id)||{}).reference||'—'),font:{size:11},x:.02,y:.99},
+    title:{text:esc(data.text.reference)+': '+esc((data.paths.find(p=>p.id===data.active_path_id)||{}).reference_origin==='manual'?'手工参考 · ':'')+esc((data.paths.find(p=>p.id===data.active_path_id)||{}).reference||'—'),font:{size:11},x:.02,y:.99},
     uirevision:data.context+'/'+data.view,selectionrevision:data.context,
     showlegend:!bridge&&!compact&&data.paths.length>1,legend:{orientation:'h',y:-.2,font:{size:12},groupclick:'togglegroup'},
     xaxis:{title:{text:esc(data.text.step)},tickvals:data.ticks,ticktext:data.tick_labels,zeroline:false,gridcolor:grid,griddash:'dot',...(data.viewport.x_range?{range:data.viewport.x_range,autorange:false}:{})},
@@ -169,7 +209,7 @@ async function render(data) {
     shapes:data.view==='2d'?data.paths.flatMap(path=>path.points.filter(p=>p.selected&&p.valid&&p.value!=null&&path.visible).map(p=>({
       type:'line',xref:'x',yref:'y',x0:p.x,x1:p.x,y0:(data.viewport.y_range||data.default_y_range)[0],y1:p.value,
       line:{color:style.focus||'#F4A06A',width:1,dash:'dot'},layer:'below'}))):[],
-    annotations:labels.map(a=>{const p=pointFor(a);return {x:a.x,y:a.y,ax:a.ax,ay:a.ay,text:`<b>${esc(p.label_short)}</b><br>${esc(p.value_label)}`,
+    annotations:labels.map(a=>{const p=pointFor(a);return {x:a.x,y:a.y,ax:a.ax,ay:a.ay,text:`<b>${p.starred_species?.length?'★ ':''}${esc(p.label_short)}</b><br>${esc(p.value_label)}`,
       showarrow:true,arrowhead:0,arrowwidth:.1,arrowcolor:'rgba(0,0,0,0)',font:{color:p.selected?style.focus||'#F4A06A':fg,size:13},bgcolor:'rgba(0,0,0,0)',opacity:1};}),
     scene:{xaxis:{...sceneAxis,title:{text:compact?'':esc(data.text.step),font:{size:11}},tickvals:data.ticks,ticktext:data.tick_labels},
       yaxis:{...sceneAxis,title:{text:compact?'':esc(data.text.category),font:{size:11}},tickvals:visibleCategories,
@@ -178,6 +218,11 @@ async function render(data) {
       zaxis:{...sceneAxis,title:{text:esc(compactEnergy)+' / '+esc(data.unit_label),font:{size:13}},nticks:compact?3:6,zeroline:true,zerolinewidth:2},
       bgcolor:bg,aspectmode:'manual',aspectratio:{x:1.7,y:Math.max(1,Math.min(1.5,data.paths.length*.65)),z:1.25},
       dragmode:data.camera_dragmode||'orbit',camera}}
+  if(data.view==='2d')for(const path of data.paths)if(path.visible)for(const point of path.points)if(point.missing_transition_state){
+    layout.annotations.push({xref:'x',yref:'paper',x:point.x,y:.88,text:`${esc(point.label_short)}<br><b>NOT FOUND</b>`,
+      showarrow:false,font:{color:style.warning||'#B65D57',size:11},bgcolor:style.label_background||bg,
+      bordercolor:style.warning||'#B65D57',borderwidth:1,borderpad:4});
+  }
   if(data.barrier && data.view==='2d') {
     const path=data.paths.find(p=>p.id===data.barrier.path_id), p=path&&path.points.find(p=>p.entry_id===data.barrier.to_entry);
     if(p && path.visible) {
@@ -191,7 +236,7 @@ async function render(data) {
   if(data.view==='2d') layout.annotations.push({xref:'paper',yref:'paper',x:1,y:1.08,xanchor:'right',yanchor:'bottom',
     text:esc(data.text.guide),showarrow:false,font:{color:zero,size:10},bgcolor:'rgba(0,0,0,0)'});
   syncing=true;
-  await Plotly.react(plot,all,layout,{responsive:true,displaylogo:false,scrollZoom:true,typesetMath:false,
+  await Plotly.react(plot,all,layout,{responsive:true,displaylogo:false,displayModeBar:!data.workbench,scrollZoom:true,typesetMath:false,
     locale:data.language==='en'?'en':'zh-CN',
     editable:false,edits:{annotationPosition:data.view==='2d'},modeBarButtonsToRemove:['toImage','sendDataToCloud','autoScale2d'],
     modeBarButtonsToAdd:data.view==='2d'?['select2d','lasso2d']:[]});
@@ -206,7 +251,7 @@ async function render(data) {
     }
   }
   plot.querySelectorAll('.annotation-arrow').forEach(arrow=>arrow.style.pointerEvents='none');
-  document.getElementById('notice').textContent=[fallback,...(bridge?[]:data.warnings),
+  document.getElementById('notice').textContent=[fallback,...(bridge&&!data.workbench?[]:data.warnings),
     all.some(t=>t.customdata&&t.customdata.length&&t.visible===true)?'':data.text.empty].filter(Boolean).join(' · ');
   document.body.style.background=bg;
   document.body.style.color=fg;
@@ -243,6 +288,17 @@ function bind() {
     const point=event.points.find(p=>p.customdata);if(!point)return;
     const c=point.customdata;notify('select',{points:[{path_id:c[0],entry_id:c[1],node_id:c[2]}],additive:!!(event.event&&(event.event.ctrlKey||event.event.shiftKey))});
   });
+  plot.on('plotly_hover',event=>{
+    const point=event.points.find(p=>p.customdata);
+    plot._grprContextPoint=point?point.customdata:null;
+  });
+  plot.on('plotly_unhover',()=>{plot._grprContextPoint=null;});
+  plot.addEventListener('contextmenu',event=>{
+    const c=plot._grprContextPoint;
+    if(!c)return;
+    event.preventDefault();
+    notify('species_select',{path_id:c[0],entry_id:c[1],node_id:c[2]});
+  },true);
   plot.on('plotly_selected',event=>{
     if(event&&event.points)notify('select',{points:event.points.filter(p=>p.customdata).map(p=>({path_id:p.customdata[0],entry_id:p.customdata[1],node_id:p.customdata[2]})).slice(0,2),additive:false});
   });
@@ -294,6 +350,7 @@ async function enqueue(raw) {
       if(pending){const next=pending;pending=null;await render(next);}
       else {
         resizePending=false;
+        if(shown?.view==='3d'&&scene3d&&sceneHost.style.display!=='none'){scene3d.resize();continue;}
         if(shown&&plot.clientWidth>0&&plot.clientHeight>0){
           if(isCompact(shown)!==compact)await render(shown);
           await Plotly.Plots.resize(plot);
@@ -305,17 +362,80 @@ async function enqueue(raw) {
   finally{running=false;}
 }
 window.grpr={render:enqueue,get shown(){return shown;},get renderCount(){return renderCount;},
+ selectPoint:(path_id,entry_id,node_id,additive=false)=>window.GRPR_STANDALONE?window.GRPR_OFFLINE_ACTION({action:'select',path_id,entry_id,node_id,additive}):notify('select',{points:[{path_id,entry_id,node_id}],additive}),
+ get renderer3d(){return scene3d;},
+ diagnostics:()=>scene3d?.diagnostics(),
+ workbenchAction:(values,data)=>{if(window.GRPR_STANDALONE)window.GRPR_OFFLINE_ACTION(values);else if(data||shown)notify('workbench_action',values,data||shown);},
  get queueState(){return {running,pending:!!pending,resizePending,cameraFlushTimer};},
- setCamera:camera=>Plotly.relayout(plot,{'scene.camera':camera}),
- setDragmode:mode=>Plotly.relayout(plot,{'scene.dragmode':mode}),
+ setCamera:camera=>scene3d&&shown?.view==='3d'?scene3d.setLegacyCamera(camera):Plotly.relayout(plot,{'scene.camera':camera}),
+ setViewport:viewport=>{if(scene3d&&shown?.view==='3d'){scene3d.setViewport(viewport);scene3d.commit();}else if(viewport.camera)Plotly.relayout(plot,{'scene.camera':viewport.camera});},
+ setDragmode:mode=>{if(scene3d&&shown?.view==='3d')scene3d.mode=mode;else Plotly.relayout(plot,{dragmode:mode});},
+ cameraTool:mode=>{
+  if(shown?.image_capture)return;
+  if(shown?.view==='3d'&&scene3d){
+   if(mode==='fit')scene3d.fitBounds();else if(mode==='zoom-in')scene3d.zoom(.8);else if(mode==='zoom-out')scene3d.zoom(1.25);else scene3d.mode=mode;
+   if(mode==='zoom-in'||mode==='zoom-out'){scene3d.invalidate();scene3d.commit();}
+  }else if(shown?.view==='2d'){
+   if(mode==='fit')Plotly.relayout(plot,{'xaxis.autorange':true,'yaxis.autorange':true});
+   else if(mode==='zoom')Plotly.relayout(plot,{dragmode:'zoom'});
+   else if(mode==='pan')Plotly.relayout(plot,{dragmode:'pan'});
+   else if(mode==='zoom-in'||mode==='zoom-out'){
+    const factor=mode==='zoom-in'?.8:1.25,changes={};
+    for(const axis of ['xaxis','yaxis']){const r=plot._fullLayout?.[axis]?._r;if(!r)continue;const center=(r[0]+r[1])/2,half=(r[1]-r[0])*factor/2;changes[axis+'.range']=[center-half,center+half];}
+    if(Object.keys(changes).length)Plotly.relayout(plot,changes);
+   }
+  }
+ },
  pointPosition:(pathId,entryId)=>{
+  if(shown?.view==='3d'&&scene3d)return scene3d.pointPosition(pathId,entryId);
   if(!shown||shown.view!=='2d')return null;
   const path=shown.paths.find(p=>p.id===pathId),p=path&&path.points.find(p=>p.entry_id===entryId);
   if(!p||!p.valid)return null;const r=plot.getBoundingClientRect(),f=plot._fullLayout;
   return {x:r.left+f.xaxis._offset+f.xaxis.l2p(p.x),y:r.top+f.yaxis._offset+f.yaxis.l2p(p.value)};
- },reset:()=>Plotly.relayout(plot,shown.view==='3d'?{'scene.camera':shown.default_camera}:{'xaxis.autorange':true,'yaxis.autorange':true})};
+ },reset:()=>scene3d&&shown?.view==='3d'?scene3d.fitBounds():Plotly.relayout(plot,shown.view==='3d'?{'scene.camera':shown.default_camera}:{'xaxis.autorange':true,'yaxis.autorange':true})};
 if(window.GRPR_STANDALONE){
- const payload=JSON.parse(document.getElementById('payload').textContent);enqueue(payload);
+ const payload=JSON.parse(document.getElementById('payload').textContent);
+ for(const view of ['2d','3d'])localViewports[view]=payload.viewports?.[payload.context+'/'+view]||{};
+ window.GRPR_OFFLINE_ACTION=async values=>{
+  if(!shown)return;const data=structuredClone(shown);
+  if(values.action==='mode'){localViewports[shown.view]=shown.viewport;data.view=values.mode;data.viewport=localViewports[data.view]||{};}
+  else if(values.action==='details'){data.details_visible=values.visible;data.details_drawer_open=values.drawer;}
+  else if(values.action==='dragmode'){data.camera_dragmode=values.mode;window.grpr.setDragmode(values.mode);}
+  else if(values.action==='reset'){window.grpr.reset();return;}
+  else if(values.action==='active_path'){
+   if(!data.workbench_paths.some(p=>p.id===values.path_id))return;
+   data.active_path_id=values.path_id;data.paths=structuredClone(data.offline_paths||data.paths);
+   for(const p of data.paths)p.visible=!!data.workbench_paths.find(v=>v.id===p.id)?.visible&&(data.compare||p.id===data.active_path_id);
+  }
+  else if(values.action==='path'){
+   const p=data.workbench_paths.find(p=>p.id===values.path_id);if(p)p.visible=values.visible;
+   data.compare=true;data.paths=structuredClone(data.offline_paths||data.paths);
+   for(const p of data.paths)p.visible=!!data.workbench_paths.find(v=>v.id===p.id)?.visible;
+   data.warnings=data.offline_warnings||data.warnings;
+  }else if(values.action==='compare'){
+   data.compare=values.enabled;data.paths=structuredClone(data.offline_paths||data.paths);
+   for(const p of data.paths)p.visible=!!data.workbench_paths.find(v=>v.id===p.id)?.visible&&(values.enabled||p.id===data.active_path_id);
+   if(values.enabled)data.warnings=data.offline_warnings||data.warnings;
+  }else if(values.action==='select'){
+   for(const p of data.paths)for(const n of p.points)n.selected=p.visible&&((p.id===values.path_id&&n.entry_id===values.entry_id)||(values.additive&&n.selected));
+   const vm=data.offline_details?.[values.entry_id];if(vm&&data.inspector){Object.assign(data.inspector,structuredClone(vm));}
+  }else return;
+  if(values.action==='path'||values.action==='compare'){
+   const selected=new Set(shown.paths.flatMap(p=>p.points.filter(n=>n.selected).map(n=>n.entry_id)));
+   for(const p of data.paths)for(const n of p.points)n.selected=p.visible&&selected.has(n.entry_id);
+  }
+  if(data.inspector){
+   const table=data.offline_table||payload.inspector,visible=new Set(data.paths.filter(p=>p.visible).map(p=>p.id));
+   const indices=table.table_paths.map((p,i)=>visible.has(p.id)?i:-1).filter(i=>i>=0);
+   data.inspector.table_paths=indices.map(i=>table.table_paths[i]);
+   data.inspector.table_rows=table.table_rows.map(r=>({...r,cells:indices.map(i=>r.cells[i])})).filter(r=>r.cells.some(Boolean));
+   for(const row of data.inspector.table_rows)for(const c of row.cells)if(c)c.selected=!!data.paths.find(p=>p.id===c.path_id)?.points.find(n=>n.entry_id===c.entry_id)?.selected;
+   const detail=data.inspector.detail;if(detail&&!data.paths.find(p=>p.id===detail.path_id)?.visible){data.inspector.detail=null;data.inspector.structure={status:'no_selection'};}
+   data.inspector.pairable=false;
+  }
+  await enqueue(data);
+ };
+ enqueue(payload);
  const toggle=document.getElementById('view-toggle'),reset=document.getElementById('reset');
  if(toggle)toggle.onclick=()=>{localViewports[shown.view]=shown.viewport;const view=shown.view==='2d'?'3d':'2d';enqueue({...shown,view,viewport:localViewports[view]||{}});};
  if(reset)reset.onclick=()=>window.grpr.reset();
@@ -325,8 +445,9 @@ if(window.GRPR_STANDALONE){
    bridge.resetRequested.connect(()=>window.grpr.reset());
    bridge.imageRequested.connect(async request=>{
      try{const q=JSON.parse(request);if(!shown||q.render_id!==shown.render_id)return;
-       const snapshot=shown,uri=await Plotly.toImage(plot,{format:'png',width:1600,height:1000,scale:1});
-       if(shown===snapshot)bridge.imageReady(JSON.stringify({request_id:q.request_id,project_id:snapshot.project_id,revision:snapshot.revision,render_id:snapshot.render_id,uri}));
+       const snapshot=shown;if(shown.view==='3d'&&!scene3d)throw new Error('Three renderer capture unavailable');
+       const uri=shown.view==='3d'?scene3d.capture():await Plotly.toImage(plot,{format:'png',width:1600,height:1000,scale:1});
+       if(shown===snapshot)bridge.imageReady(JSON.stringify({request_id:q.request_id,project_id:snapshot.project_id,revision:snapshot.revision,render_id:snapshot.render_id,viewport:snapshot.viewport,uri}));
      }catch(e){bridge.failed(String(e));}
    });
    bridge.pageReady(2,Plotly.version);
@@ -337,5 +458,6 @@ if(window.GRPR_STANDALONE){
 new ResizeObserver(()=>{
   if(!shown||resizeFrame)return;
   resizeFrame=requestAnimationFrame(()=>{resizeFrame=0;resizePending=true;enqueue();});
-}).observe(plot);
+}).observe(host);
+window.addEventListener('beforeunload',()=>scene3d?.dispose());
 })();

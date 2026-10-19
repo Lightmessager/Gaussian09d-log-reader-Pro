@@ -22,7 +22,7 @@ def test_four_node_oracle_absolute_reference_and_one_subtraction():
     assert [n.display_value for n in result.nodes] == pytest.approx(
         [v * HARTREE_TO_KCAL for v in expected_rel], abs=1e-9)
     assert result.nodes[1].reference_hartree == -150
-    assert len(result.nodes[1].dependencies) == 1 and len(result.nodes[1].reference_dependencies) == 2
+    assert len(result.nodes[1].dependencies) == 2 and len(result.nodes[1].reference_dependencies) == 4
     json.dumps(snapshot_to_dict(result), allow_nan=False)
 
 

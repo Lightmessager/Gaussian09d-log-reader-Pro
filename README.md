@@ -1,25 +1,21 @@
-# GaussianReadPro
+# GaussianReaderPro 2.0.0
 
 A desktop workbench for reading Gaussian output files and building auditable reaction energy profiles.
 
-**GaussianReadPro** parses Gaussian `.log` files locally, organizes calculations by source and job, and helps you compare structures with explicit energy expressions and references. The interface supports Chinese and English.
+**GaussianReaderPro** parses Gaussian `.log` files locally, organizes calculations by source and job, and helps you compare structures with explicit energy expressions and references. The interface supports Chinese and English. Version 2.0.0 includes the reaction path builder, project naming and save-state controls, guided job selection, editable material and stage cards, branch connections, selectable issue lists, and safer draft/save/undo handling. See [`docs/LUNA_WORKFLOW_UX_V2_PROJECT_BRIEF.zh-CN.md`](docs/LUNA_WORKFLOW_UX_V2_PROJECT_BRIEF.zh-CN.md) and the U8 validation report for scope and status.
 
 [简体中文](#简体中文) · [English](#english)
 
-## Download
+## Source repository
 
-**Windows x64 preview:** [Download GaussianReadPro v0.1.0-beta.1](https://github.com/Lightmessager/Gaussian09d-log-reader-Pro/releases/download/v0.1.0-beta.1/GaussianReadPro-Windows-x64-portable.zip)
-
-Extract the ZIP and run `GaussianReadPro/GaussianReadPro.exe`. Keep the complete folder together; the executable depends on the bundled `_internal` directory. This is a portable folder, not an installer, and this local build is not code-signed.
-
-If the app crashes on this particular host with the default CPU scheduler, try `Launch-GaussianReadPro-compat.cmd` inside the extracted folder. It only sets CPU affinity for the app and its child processes.
+This repository contains application source, tests, packaging scripts, and project documentation. Windows release executables and portable archives are distributed separately and are not stored in this source repository. The 2.0.0 package and UI verification record is in [`docs/ux-v2-u8-validation.zh-CN.md`](docs/ux-v2-u8-validation.zh-CN.md).
 
 ## Highlights
 
 - Batch import Gaussian `.log` files and inspect parsed energies, jobs, and source evidence.
 - Build per-structure relative-energy expressions and explicit reference systems.
-- Explore interactive, smoothed 2D and 3D reaction energy profiles, compare paths, and inspect selected structures.
-- Save and restore projects, workspaces, language, theme, and chart view state.
+- Explore interactive 2D and 3D reaction energy profiles, compare paths, and inspect selected structures.
+- Create and rename projects, preserve drafts, and manage save state and undo.
 - Export chart images, standalone HTML, tables, and source-audit data.
 - Use Chinese or English UI; chart resources are bundled for offline operation.
 
@@ -50,29 +46,34 @@ On Windows with Python 3.12 and the locked dependencies:
 .\.venv\Scripts\python.exe tools\check_windows_bundle.py
 ```
 
-The build writes `dist/GaussianReadPro/` and `artifacts/releases/GaussianReadPro-Windows-x64-portable.zip`. Package verification details are in [`docs/windows-package-validation.md`](docs/windows-package-validation.md). Replace the application artwork at `src/gaussianreadpro/resources/icons/app-icon.png` and the multi-size Windows icon at `packaging/GaussianReadPro.ico`, then rebuild to customize the icon.
+The build writes to `dist/` and `artifacts/releases/`, which are local generated outputs and are excluded from this repository. Packaging and validation notes are in [`docs/`](docs/).
 
 ## Platform status
 
-The current preview package and native GUI verification target Windows 11 x64. The codebase is designed around Qt, but macOS, Linux, and other Windows versions have not yet been packaged and validated. Do not treat the Windows build as a cross-platform release.
+The 2.0.0 preview package and native GUI verification target Windows 11 x64. The codebase is designed around Qt, but macOS, Linux, and other Windows versions have not yet been packaged and validated. WebEngine local page loading remains an open validation issue; the application falls back to its native 2D chart when that page is unavailable.
 
 ## 简体中文
 
-GaussianReadPro 是用于读取 Gaussian 输出文件并构建可追溯反应能量剖面的桌面工作台。程序在本机解析 `.log` 文件，按来源文件和计算作业整理数据，并使用明确的能量表达式与参考体系比较结构。界面支持中英文切换。
+GaussianReaderPro 2.0.0 是用于读取 Gaussian 输出文件并构建可追溯反应能量剖面的桌面工作台。程序在本机解析 `.log` 文件，按来源文件和计算作业整理数据，并使用明确的能量表达式与参考体系比较结构。新版包含反应路径搭建器、项目命名与保存状态、导入后的作业选择引导、物质卡/阶段卡/分支连线、可定位的问题清单，以及草稿保护、应用并保存、失败重试和撤销流程。详细范围见[项目书](docs/LUNA_WORKFLOW_UX_V2_PROJECT_BRIEF.zh-CN.md)及 U8 验收报告。
 
-### Windows 预览版
+### 源码仓库说明
 
-下载 [GaussianReadPro v0.1.0-beta.1](https://github.com/Lightmessager/Gaussian09d-log-reader-Pro/releases/download/v0.1.0-beta.1/GaussianReadPro-Windows-x64-portable.zip)，解压后运行 `GaussianReadPro/GaussianReadPro.exe`。请保留完整文件夹及 `_internal` 目录。本版本是免安装便携包，不是安装程序；当前本机构建未进行数字签名。
+本仓库保存应用源码、测试、打包脚本和项目文档。Windows EXE 与便携 ZIP 单独分发，不放在源码仓库中。2.0.0 的打包与界面验收记录见 [`docs/ux-v2-u8-validation.zh-CN.md`](docs/ux-v2-u8-validation.zh-CN.md)。
 
-若此电脑使用默认 CPU 调度时出现闪退，可尝试运行解压目录中的 `Launch-GaussianReadPro-compat.cmd`。该脚本只为程序及子进程设置 CPU 亲和性。
+### 从源码运行
 
-### 主要功能
+当前开发环境面向 **Python 3.12**。在仓库根目录的 PowerShell 中运行：
 
-- 批量导入 Gaussian `.log` 文件，查看解析出的能量、作业和来源证据。
-- 为各结构构建相对能量表达式和显式参考体系。
-- 交互查看平滑 2D/3D 反应能量剖面、对比反应路径并检查选中结构。
-- 保存和恢复项目、工作区、语言、主题及图表视图。
-- 导出图像、独立 HTML、数据表和来源审计信息。
-- 中英文界面；运行时图表资源随程序打包，可离线使用。
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe tools\vendor_plotly.py
+.\.venv\Scripts\python.exe tools\run_app.py
+```
 
-当前预览版和原生界面验证面向 Windows 11 x64。macOS、Linux 和其他 Windows 版本尚未完成独立打包与验收。
+打开已有项目时，将 `.grproj` 路径传给 `tools\run_app.py`。开发说明见 [`docs/handoff.md`](docs/handoff.md) 与 [`AI_HANDOFF.md`](AI_HANDOFF.md)。
+
+### Windows 便携包
+
+可以按上方打包命令在 Windows 11 x64 上构建。本地生成的 `dist/` 与 `artifacts/releases/` 不提交到源码仓库。当前预览版尚未在 macOS、Linux 或其他 Windows 版本完成打包验收。WebEngine 本地页面加载仍有已记录的问题；页面不可用时，应用会回退到原生二维图。
+

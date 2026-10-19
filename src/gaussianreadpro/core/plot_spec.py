@@ -29,6 +29,10 @@ class PlotPoint:
     reference_dependencies: tuple
     diagnostics: tuple[str, ...]
     valid: bool
+    starred_species: tuple[str, ...] = ()
+    predecessor_entry_id: str | None = None
+    missing_transition_state: bool = False
+    predecessor_entry_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class PlotPath:
     reference_signature: str
     points: tuple[PlotPoint, ...]
     diagnostics: tuple[str, ...]
+    reference_origin: str = "expression"
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,7 @@ class PlotSpec:
     paths: tuple[PlotPath, ...]
     sources: tuple = ()
     protocol_version: int = 2
+    jobs: tuple = ()
 
 
 def _signature(expression):
@@ -72,6 +78,30 @@ def _signature(expression):
 def build_plot_spec(project, results):
     results = {r.path_id: r for r in results}
     nodes = {n.id: n for n in project.nodes}
+    try:
+        from .reaction_network import read_reaction_network
+        network = read_reaction_network(project)
+        starred = {item["id"]: item["name"] for item in network["species"] if item["starred"]}
+        reference_origins = {item["path_id"]: item["zero_point"]["kind"]
+                             for item in network["path_reactions"] if not item["historical"]}
+        predecessor_entries = {}
+        missing_entries = set()
+        for reaction in network["path_reactions"]:
+            if reaction["historical"]:
+                continue
+            stage_entries = {stage["id"]: stage["entry_id"] for stage in reaction["stages"]}
+            predecessor_entries.update({stage["entry_id"]: tuple(stage_entries[parent]
+                for parent in stage["predecessor_stage_ids"] if parent in stage_entries)
+                for stage in reaction["stages"] if stage["entry_id"]})
+            missing_entries.update(stage["entry_id"] for stage in reaction["stages"]
+                                   if stage.get("missing") and stage["entry_id"])
+        star_links = {link["node_id"]: tuple(starred[identifier] for identifier in link["species_ids"]
+            if identifier in starred) for link in network["node_links"] if not link["historical"]}
+    except ValueError:
+        star_links = {}
+        reference_origins = {}
+        predecessor_entries = {}
+        missing_entries = set()
     paths = []
     for path in project.paths:
         result = results.get(path.id)
@@ -99,15 +129,20 @@ def build_plot_spec(project, results):
                 tuple(conversions),
                 node.expression.draft_text if node.expression.draft_text is not None else render_expression(node.expression, project.alias_bindings),
                 tuple(value.dependencies) if value else (), tuple(value.reference_dependencies) if value else (),
-                tuple(d.code for d in value.diagnostics) if value else ("awaiting_current_result",), valid))
+                tuple(d.code for d in value.diagnostics) if value else ("awaiting_current_result",), valid,
+                star_links.get(node.id, ()),
+                (predecessor_entries.get(entry.id) or (None,))[0], entry.id in missing_entries,
+                predecessor_entries.get(entry.id, ())))
         color = path.color if re.fullmatch(r"#[0-9a-fA-F]{6}", path.color or "") else "#5367b8"
         paths.append(PlotPath(path.id, path.label, path.energy_kind.value, path.calculation_mode.value,
             path.unit.value, color, path.visible,
             (path.reference_expression.draft_text if path.reference_expression.draft_text is not None else
              render_expression(path.reference_expression, project.alias_bindings)) if path.reference_expression else "",
-            _signature(path.reference_expression), tuple(points), tuple(d.code for d in result.diagnostics) if result else ()))
+            _signature(path.reference_expression), tuple(points), tuple(d.code for d in result.diagnostics) if result else (),
+            reference_origins.get(path.id, "expression")))
     sources = tuple((s.id, s.original_name, s.original_path, s.sha256, s.parser_version) for s in project.source_files)
-    return PlotSpec(project.id, project.revision, project.unit_constants_version, tuple(paths), sources)
+    jobs = tuple((job.id, source.id, job.ordinal + 1) for source in project.source_files for job in source.jobs)
+    return PlotSpec(project.id, project.revision, project.unit_constants_version, tuple(paths), sources, jobs=jobs)
 
 
 def clean_view_state(raw, spec):
@@ -133,12 +168,33 @@ def clean_view_state(raw, spec):
                       and all(numeric(val.get(axis), 100) for axis in ("x", "y", "z"))}
             if camera:
                 result["camera"] = camera
+        three = value.get("three_v1")
+        if isinstance(three, Mapping) and type(three.get("version")) is int and three["version"] == 1 and three.get("projection") == "orthographic":
+            vectors = [three.get(key) for key in ("position", "target", "up")]
+            if all(isinstance(v, (list, tuple)) and len(v) == 3 and all(numeric(x, 1000) for x in v) for v in vectors) and numeric(three.get("zoom"), 12) and .15 <= three["zoom"] <= 12:
+                position, target, up = vectors
+                direction = [a - b for a, b in zip(position, target)]
+                distance = math.sqrt(sum(x*x for x in direction))
+                up_length = math.sqrt(sum(x*x for x in up))
+                cross = [direction[1]*up[2]-direction[2]*up[1], direction[2]*up[0]-direction[0]*up[2], direction[0]*up[1]-direction[1]*up[0]]
+                if distance >= .01 and up_length >= .01 and math.sqrt(sum(x*x for x in cross)) / distance / up_length >= .001:
+                    result["three_v1"] = {"version": 1, "projection": "orthographic", "position": list(position), "target": list(target), "up": list(up), "zoom": three["zoom"]}
+                    if three.get("migrated_from") == "plotly-v1":
+                        result["three_v1"]["migrated_from"] = "plotly-v1"
         return result
     result = {}
     if raw.get("mode") in ("2d", "3d"):
         result["mode"] = raw["mode"]
     if type(raw.get("compare")) is bool:
         result["compare"] = raw["compare"]
+    for key in ("details_visible", "details_drawer_open"):
+        if type(raw.get(key)) is bool:
+            result[key] = raw[key]
+    identities = {(p.id, n.entry_id) for p in spec.paths for n in p.points}
+    if isinstance(raw.get("selected_points"), (list, tuple)):
+        result["selected_points"] = [list(pair) for pair in raw["selected_points"][-2:]
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+            and all(isinstance(x, str) for x in pair) and tuple(pair) in identities]
     if raw.get("theme") in ("auto", "light", "dark"):
         result["theme"] = raw["theme"]
     if isinstance(raw.get("hidden_paths"), (tuple, list)):
@@ -151,6 +207,19 @@ def clean_view_state(raw, spec):
     if isinstance(views, Mapping):
         result["viewports"] = {key: viewport(val) for key, val in list(views.items())[:100]
                                if isinstance(key, str) and len(key) < 300}
+    if isinstance(raw.get("step_pairs"), (list, tuple)):
+        identities = {(p.id, n.entry_id) for p in spec.paths for n in p.points}
+        pairs, used = [], set()
+        for group in raw["step_pairs"][:1000]:
+            if not isinstance(group, (list, tuple)) or not 2 <= len(group) <= len(paths):
+                continue
+            if not all(isinstance(k, (list, tuple)) and len(k) == 2 and all(isinstance(x,str) for x in k) for k in group):
+                continue
+            keys = [tuple(k) for k in group]
+            if len({k[0] for k in keys}) == len(keys) and all(k in identities and k not in used for k in keys):
+                pairs.append([list(k) for k in keys])
+                used.update(keys)
+        result["step_pairs"] = pairs
     barrier = raw.get("barrier")
     if "barrier" in raw and barrier is None:
         result["barrier"] = None
@@ -184,12 +253,22 @@ def compare_points(spec, keys, unit):
         return None
     return {"value": difference,
             "first": first.label, "second": second.label,
-            "barrier_eligible": a.id == b.id and second.role == "transition_state" and second.x == first.x + 1,
+            "barrier_eligible": a.id == b.id and second.role == "transition_state" and
+                (first.entry_id in second.predecessor_entry_ids if second.predecessor_entry_ids
+                 else second.predecessor_entry_id == first.entry_id if second.predecessor_entry_id
+                 else second.x == first.x + 1),
             "path_id": a.id, "from_entry": first.entry_id, "to_entry": second.entry_id}
 
 
-def visual_curve_runs(points, samples=24):
+def visual_curve_runs(points, samples=24, edges=None):
     """Display-only, non-overshooting connections. Never used for values, hover or barriers."""
+    if edges is not None:
+        by_id = {point[0]: (point[1], point[2]) for point in points if point is not None}
+        runs = []
+        for source, target in edges:
+            if source in by_id and target in by_id:
+                runs.extend(visual_curve_runs([by_id[source], by_id[target]], samples))
+        return runs
     runs, run, previous = [], [], None
     for point in points:
         if point is None:
@@ -247,7 +326,10 @@ def plot_payload(spec, active_path_id, *, compare=False, state=None, language="z
             if value is not None and path.visible and path.id not in hidden:
                 for x, y, dy in occupied:
                     if abs(point.x - x) < .45 and abs(value - y) / span < .12 and abs(offset[1] - dy) < 44:
-                        offset[1] = dy - 44
+                        # Put matching labels on opposite sides of nearby points.
+                        # Moving both annotations upward made their text boxes collide
+                        # when two paths had a small but nonzero energy difference.
+                        offset[1] = 68.0 if dy < 0 else -68.0
             offset = state.get("label_offsets", {}).get(point.entry_id, offset)
             if value is not None and path.visible and path.id not in hidden:
                 occupied.append((point.x, value, offset[1]))
@@ -262,9 +344,15 @@ def plot_payload(spec, active_path_id, *, compare=False, state=None, language="z
             points.append(data)
         paths.append({"id": path.id, "label": path.label, "color": path.color, "category": category,
                       "visible": path.visible and path.id not in hidden, "reference": path.reference,
+                      "reference_origin": path.reference_origin,
                       "reference_signature": path.reference_signature,
                       "diagnostics": list(path.diagnostics), "points": points,
-                      "curve_runs": visual_curve_runs([(p["x"], p["value"]) if p["valid"] and p["value"] is not None else None for p in points])})
+                      "curve_runs": (visual_curve_runs(
+                          [(p["entry_id"], p["x"], p["value"]) if p["valid"] and p["value"] is not None else None for p in points],
+                          edges=[(parent, point["entry_id"]) for point in points
+                                 for parent in point.get("predecessor_entry_ids", [])])
+                          if any(point.get("predecessor_entry_ids") for point in points) else
+                          visual_curve_runs([(p["x"], p["value"]) if p["valid"] and p["value"] is not None else None for p in points]))})
     if state.get("mode") == "3d" and sum(bool(path["visible"]) for path in paths) <= 1:
         warnings.append("3D depth encodes path category; comparison is more informative." if en else
                         "三维深度轴表示路径类别；比较多条路径时更有帮助。")
@@ -287,7 +375,11 @@ def plot_payload(spec, active_path_id, *, compare=False, state=None, language="z
         "view": state.get("mode", "2d"), "unit": unit, "unit_label": UNITS[unit], "energy_label": energy_label,
         "mode": mode, "kind": kind, "language": language, "dark": bool(dark), "context": context,
         "viewport": state.get("viewports", {}).get(context + "/" + state.get("mode", "2d"), {}),
-        "warnings": warnings, "paths": paths, "barrier": marker, "sources": list(spec.sources),
+        "viewports": state.get("viewports", {}),
+        "details_visible": state.get("details_visible", True),
+        "details_drawer_open": state.get("details_drawer_open", False),
+        "warnings": warnings, "paths": paths, "barrier": marker, "sources": list(spec.sources), "jobs": list(spec.jobs),
+        "renderer_capabilities": ["three_v1", "plotly-v1"],
         "barrier_label": barrier_label,
         "ticks": steps, "tick_labels": [str(v+1) for v in steps],
         "default_y_range": default_range,

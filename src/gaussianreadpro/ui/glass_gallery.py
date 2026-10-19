@@ -41,8 +41,8 @@ class ThemeGallery(QMainWindow):
         self._theme = theme
         self._reduced = bool(reduced)
         apply_theme(QApplication.instance(), theme, reduced=reduced)
-        self.setWindowTitle("GaussianReadPro · Liquid Glass G1 gallery")
-        self.setAccessibleName("GaussianReadPro liquid glass theme gallery")
+        self.setWindowTitle("GaussianReaderPro · Liquid Glass G1 gallery")
+        self.setAccessibleName("GaussianReaderPro liquid glass theme gallery")
         self.resize(1180, 800)
 
         self.backdrop = GlassBackdrop(theme, reduced=reduced)
@@ -58,7 +58,7 @@ class ThemeGallery(QMainWindow):
         mark.setObjectName("wordmark")
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mark.setFixedSize(42, 42)
-        title = QLabel("GaussianReadPro")
+        title = QLabel("GaussianReaderPro")
         title.setObjectName("brand")
         subtitle = QLabel("Lavender mist · Sunset glass")
         subtitle.setObjectName("muted")

@@ -81,6 +81,7 @@ def test_snapshot_reports_source_file_job_and_line():
 def test_expanded_profile_reuses_details_and_restores_workbench(app, workbench):
     window, _ = workbench
     panel, details = window.profile, window.plot_inspector
+    panel.workbench = False  # Legacy/native panel keeps its original detail reparenting contract.
     original_parent = details.parentWidget()
     original_index = original_parent.layout().indexOf(details)
     browser = panel.webview
@@ -102,3 +103,23 @@ def test_expanded_profile_reuses_details_and_restores_workbench(app, workbench):
     assert panel._expanded is None
     assert details.parentWidget() is original_parent
     assert original_parent.layout().indexOf(details) == original_index
+
+
+def test_expanded_workbench_keeps_single_page_and_restores_parent(app, workbench):
+    window, _ = workbench
+    panel, details = window.profile, window.plot_inspector
+    parent, details_parent = panel.parentWidget(), details.parentWidget()
+    browser = panel.webview
+    panel.expand()
+    dialog = panel._expanded
+    assert not hasattr(dialog, "details_scroll")
+    assert panel.webview is browser
+    assert details.parentWidget() is details_parent
+    dialog.showNormal()
+    dialog.resize(880, 680)
+    app.processEvents()
+    dialog.close()
+    app.processEvents()
+    assert panel._expanded is None
+    assert panel.parentWidget() is parent
+    assert details.parentWidget() is details_parent
